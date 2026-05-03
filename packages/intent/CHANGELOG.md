@@ -1,5 +1,13 @@
 # @tanstack/intent
 
+## 0.0.37
+
+### Patch Changes
+
+- Add the `@tanstack/intent/core` entrypoint for programmatic skill discovery and loading. ([#124](https://github.com/TanStack/intent/pull/124))
+
+  `intent load` now uses the core APIs and a direct dependency fast path, avoiding broad workspace scans when a requested skill can be resolved from the target package. This significantly improves load performance, especially in large workspaces, while preserving markdown link rewriting, warnings, debug output, and existing CLI behavior.
+
 ## 0.0.36
 
 ### Patch Changes
