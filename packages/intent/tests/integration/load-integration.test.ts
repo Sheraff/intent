@@ -33,29 +33,26 @@ function expectSkillContent(stdout: string): void {
   expect(stdout).not.toMatch(/^Usage:/m)
 }
 
-describe.each(PACKAGE_MANAGERS)(
-  'intent load via installed bin (%s)',
-  (pm) => {
-    it('prints the resolved skill content', () => {
-      const { root, cwd } = scaffoldProject({
-        pm,
-        structure: 'single',
-        dependency: '@test-intent/skills-leaf',
-        registryUrl: registry.url,
-      })
-      tempDirs.push(root)
+describe.each(PACKAGE_MANAGERS)('intent load via installed bin (%s)', (pm) => {
+  it('prints the resolved skill content', () => {
+    const { root, cwd } = scaffoldProject({
+      pm,
+      structure: 'single',
+      dependency: '@test-intent/skills-leaf',
+      registryUrl: registry.url,
+    })
+    tempDirs.push(root)
 
-      const result = runLoad(cwd, SKILL_USE)
+    const result = runLoad(cwd, SKILL_USE)
 
-      if (result.exitCode !== 0) {
-        throw new Error(
-          `intent load failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-        )
-      }
-      expectSkillContent(result.stdout)
-    }, 60_000)
-  },
-)
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `intent load failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      )
+    }
+    expectSkillContent(result.stdout)
+  }, 60_000)
+})
 
 describe('intent load resolution variants', () => {
   it('returns the resolved path with --path', () => {
@@ -74,9 +71,7 @@ describe('intent load resolution variants', () => {
         `intent load --path failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
       )
     }
-    expect(result.stdout.trim()).toMatch(
-      /skills[/\\]core[/\\]SKILL\.md\s*$/,
-    )
+    expect(result.stdout.trim()).toMatch(/skills[/\\]core[/\\]SKILL\.md\s*$/)
   }, 60_000)
 
   it('returns structured JSON with --json', () => {
