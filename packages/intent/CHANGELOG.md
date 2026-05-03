@@ -1,5 +1,13 @@
 # @tanstack/intent
 
+## 0.0.38
+
+### Patch Changes
+
+- Refactor workspace pattern discovery to use a JSONC parser for Deno configs, support additional workspace config shapes, and cache workspace roots, parsed patterns, and resolved package directories during CLI commands. ([#125](https://github.com/TanStack/intent/pull/125))
+
+  This also allows Deno workspace members with `deno.json` or `deno.jsonc` manifests to be resolved as workspace packages.
+
 ## 0.0.37
 
 ### Patch Changes
