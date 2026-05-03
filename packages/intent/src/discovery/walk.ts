@@ -1,17 +1,16 @@
-import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { listNodeModulesPackageDirs, resolveDepDir, getDeps } from '../utils.js'
-import {
-  readWorkspacePatterns,
-  resolveWorkspacePackages,
-} from '../workspace-patterns.js'
+import { resolveDepDir, getDeps } from '../utils.js'
+import { findWorkspacePackages } from '../workspace-patterns.js'
+import type { IntentFsCache } from '../fs-cache.js'
 import type { IntentPackage } from '../types.js'
 
 type PackageJson = Record<string, unknown>
 
 export interface CreateDependencyWalkerOptions {
+  fsCache: IntentFsCache
   projectRoot: string
   readPkgJson: (dirPath: string) => PackageJson | null
+  scanNodeModulesDir: (nodeModulesDir: string) => void
   tryRegister: (dirPath: string, fallbackName: string) => boolean
   packages: Array<IntentPackage>
   warnings: Array<string>
@@ -83,35 +82,27 @@ export function createDependencyWalker(opts: CreateDependencyWalkerOptions) {
     dirPath: string,
     label: string,
   ): PackageJson | null {
-    try {
-      return JSON.parse(
-        readFileSync(join(dirPath, 'package.json'), 'utf8'),
-      ) as PackageJson
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
+    const result = opts.fsCache.readPackageJsonResult(dirPath)
+    if (!result.packageJson) {
+      const code = (result.error as NodeJS.ErrnoException | null)?.code
       if (code !== 'ENOENT') {
         opts.warnings.push(
-          `Could not read ${label} package.json at ${dirPath}: ${(err as Error).message}`,
+          `Could not read ${label} package.json at ${dirPath}: ${
+            result.error instanceof Error
+              ? result.error.message
+              : 'invalid package.json'
+          }`,
         )
       }
       return null
     }
+
+    return result.packageJson
   }
 
   function walkWorkspacePackages(): void {
-    const workspacePatterns = readWorkspacePatterns(opts.projectRoot)
-    if (!workspacePatterns) return
-
-    for (const wsDir of resolveWorkspacePackages(
-      opts.projectRoot,
-      workspacePatterns,
-    )) {
-      const wsNodeModules = join(wsDir, 'node_modules')
-      if (existsSync(wsNodeModules)) {
-        for (const dirPath of listNodeModulesPackageDirs(wsNodeModules)) {
-          opts.tryRegister(dirPath, 'unknown')
-        }
-      }
+    for (const wsDir of findWorkspacePackages(opts.projectRoot)) {
+      opts.scanNodeModulesDir(join(wsDir, 'node_modules'))
 
       const wsPkg = readPkgJsonWithWarning(wsDir, 'workspace')
       if (wsPkg) {

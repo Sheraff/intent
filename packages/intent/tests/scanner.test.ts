@@ -119,6 +119,33 @@ describe('scanForIntents', () => {
     expect(result.packages[0]!.skills[0]!.description).toBe(
       'Core database concepts',
     )
+    expect(result.stats).toEqual(
+      expect.objectContaining({
+        packageJsonReadCount: expect.any(Number),
+        packageJsonCacheHits: expect.any(Number),
+      }),
+    )
+    expect(result.stats!.packageJsonReadCount).toBeGreaterThan(0)
+  })
+
+  it('does not throw when skills exists but is not a directory', () => {
+    const pkgDir = createDir(root, 'node_modules', '@tanstack', 'db')
+    writeJson(join(pkgDir, 'package.json'), {
+      name: '@tanstack/db',
+      version: '0.5.2',
+      intent: {
+        version: 1,
+        repo: 'TanStack/db',
+        docs: 'docs/',
+      },
+    })
+    writeFileSync(join(pkgDir, 'skills'), 'not a directory')
+
+    const result = scanForIntents(root)
+
+    expect(result.packages).toHaveLength(1)
+    expect(result.packages[0]!.name).toBe('@tanstack/db')
+    expect(result.packages[0]!.skills).toEqual([])
   })
 
   it('discovers packages through symlinks (pnpm layout)', () => {
@@ -284,6 +311,50 @@ describe('scanForIntents', () => {
     const result = scanForIntents(root)
     expect(result.packages).toHaveLength(0)
     expect(result.warnings).toHaveLength(0)
+  })
+
+  it('still discovers undeclared packages from broad node_modules scans', () => {
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      dependencies: {
+        'declared-skill-pkg': '1.0.0',
+      },
+    })
+
+    const declaredDir = createDir(root, 'node_modules', 'declared-skill-pkg')
+    writeJson(join(declaredDir, 'package.json'), {
+      name: 'declared-skill-pkg',
+      version: '1.0.0',
+      intent: { version: 1, repo: 'test/declared', docs: 'docs/' },
+    })
+    writeSkillMd(createDir(declaredDir, 'skills', 'declared'), {
+      name: 'declared',
+      description: 'Declared skill',
+    })
+
+    const undeclaredDir = createDir(
+      root,
+      'node_modules',
+      'undeclared-skill-pkg',
+    )
+    writeJson(join(undeclaredDir, 'package.json'), {
+      name: 'undeclared-skill-pkg',
+      version: '1.0.0',
+      intent: { version: 1, repo: 'test/undeclared', docs: 'docs/' },
+    })
+    writeSkillMd(createDir(undeclaredDir, 'skills', 'undeclared'), {
+      name: 'undeclared',
+      description: 'Undeclared skill',
+    })
+
+    const result = scanForIntents(root)
+
+    expect(result.packages.map((pkg) => pkg.name).sort()).toEqual([
+      'declared-skill-pkg',
+      'undeclared-skill-pkg',
+    ])
+    expect(result.nodeModules.local.scanned).toBe(true)
   })
 
   it('discovers global-only intent packages', () => {
@@ -475,6 +546,71 @@ describe('scanForIntents', () => {
     )
     expect(versionWarning).toContain('across 3 versions')
     expect(versionWarning).toContain('Using 5.0.0')
+  })
+
+  it('keeps same-name packages at different installed roots as separate variants', () => {
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      dependencies: {
+        'router-consumer': '1.0.0',
+      },
+    })
+
+    const hoistedRouterDir = createDir(
+      root,
+      'node_modules',
+      '@tanstack',
+      'router',
+    )
+    writeJson(join(hoistedRouterDir, 'package.json'), {
+      name: '@tanstack/router',
+      version: '1.0.0',
+      intent: { version: 1, repo: 'TanStack/router', docs: 'docs/' },
+    })
+    writeSkillMd(createDir(hoistedRouterDir, 'skills', 'router-v1'), {
+      name: 'router-v1',
+      description: 'Router v1 skill',
+    })
+
+    const consumerDir = createDir(root, 'node_modules', 'router-consumer')
+    writeJson(join(consumerDir, 'package.json'), {
+      name: 'router-consumer',
+      version: '1.0.0',
+      dependencies: {
+        '@tanstack/router': '2.0.0',
+      },
+    })
+
+    const nestedRouterDir = createDir(
+      consumerDir,
+      'node_modules',
+      '@tanstack',
+      'router',
+    )
+    writeJson(join(nestedRouterDir, 'package.json'), {
+      name: '@tanstack/router',
+      version: '2.0.0',
+      intent: { version: 1, repo: 'TanStack/router', docs: 'docs/' },
+    })
+    writeSkillMd(createDir(nestedRouterDir, 'skills', 'router-v2'), {
+      name: 'router-v2',
+      description: 'Router v2 skill',
+    })
+
+    const result = scanForIntents(root)
+    const conflict = result.conflicts.find(
+      (item) => item.packageName === '@tanstack/router',
+    )
+
+    expect(result.packages).toHaveLength(1)
+    expect(result.packages[0]!.name).toBe('@tanstack/router')
+    expect(conflict?.variants).toEqual(
+      expect.arrayContaining([
+        { version: '1.0.0', packageRoot: hoistedRouterDir },
+        { version: '2.0.0', packageRoot: nestedRouterDir },
+      ]),
+    )
   })
 
   it('prefers stable releases over prereleases at the same depth', () => {
