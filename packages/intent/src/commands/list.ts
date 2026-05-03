@@ -1,24 +1,36 @@
 import {
+  coreOptionsFromGlobalFlags,
+  printDebugInfo,
   printWarnings,
-  scanOptionsFromGlobalFlags,
   type GlobalScanFlags,
 } from '../cli-support.js'
+import { listIntentSkills } from '../core.js'
+import type {
+  IntentPackageSummary,
+  IntentSkillList,
+  IntentSkillSummary,
+} from '../core.js'
 import type { ScanOptions, ScanResult } from '../types.js'
 
 export interface ListCommandOptions extends GlobalScanFlags {
   json?: boolean
 }
 
-function formatScanCoverage(result: ScanResult): string {
-  const coverage: Array<string> = []
+function printListDebug(result: IntentSkillList): void {
+  if (!result.debug) return
 
-  if (result.nodeModules.local.scanned) coverage.push('project node_modules')
-  if (result.nodeModules.global.scanned) coverage.push('global node_modules')
-
-  return coverage.join(', ')
+  printDebugInfo('intent list', [
+    ['cwd', result.debug.cwd],
+    ['scope', result.debug.scope],
+    ['excludes', result.debug.excludes],
+    ['packages', result.debug.packageCount],
+    ['skills', result.debug.skillCount],
+    ['warnings', result.debug.warningCount],
+    ['conflicts', result.debug.conflictCount],
+  ])
 }
 
-function printVersionConflicts(result: ScanResult): void {
+function printVersionConflicts(result: IntentSkillList): void {
   if (result.conflicts.length === 0) return
 
   console.log('\nVersion conflicts:\n')
@@ -37,25 +49,48 @@ function printVersionConflicts(result: ScanResult): void {
   }
 }
 
+function groupSkillsByPackageRoot(
+  skills: Array<IntentSkillSummary>,
+): Map<string, Array<IntentSkillSummary>> {
+  const grouped = new Map<string, Array<IntentSkillSummary>>()
+
+  for (const skill of skills) {
+    const packageSkills = grouped.get(skill.packageRoot)
+    if (packageSkills) {
+      packageSkills.push(skill)
+    } else {
+      grouped.set(skill.packageRoot, [skill])
+    }
+  }
+
+  return grouped
+}
+
+function getPackageSkills(
+  pkg: IntentPackageSummary,
+  skillsByPackageRoot: Map<string, Array<IntentSkillSummary>>,
+): Array<IntentSkillSummary> {
+  return skillsByPackageRoot.get(pkg.packageRoot) ?? []
+}
+
 export async function runListCommand(
   options: ListCommandOptions,
-  scanIntentsOrFail: (options?: ScanOptions) => Promise<ScanResult>,
+  _scanIntentsOrFail?: (options?: ScanOptions) => Promise<ScanResult>,
 ): Promise<void> {
-  const result = await scanIntentsOrFail(scanOptionsFromGlobalFlags(options))
+  const result = listIntentSkills(coreOptionsFromGlobalFlags(options))
+  printListDebug(result)
 
   if (options.json) {
-    console.log(JSON.stringify(result, null, 2))
+    const { debug: _debug, ...jsonResult } = result
+    console.log(JSON.stringify(jsonResult, null, 2))
     return
   }
 
   const { computeSkillNameWidth, printSkillTree, printTable } =
     await import('../display.js')
 
-  const scanCoverage = formatScanCoverage(result)
-
   if (result.packages.length === 0) {
     console.log('No intent-enabled packages found.')
-    if (scanCoverage) console.log(`Scanned: ${scanCoverage}`)
     if (result.warnings.length > 0) {
       console.log()
       printWarnings(result.warnings)
@@ -63,40 +98,42 @@ export async function runListCommand(
     return
   }
 
-  const totalSkills = result.packages.reduce(
-    (sum, pkg) => sum + pkg.skills.length,
-    0,
-  )
   console.log(
-    `\n${result.packages.length} intent-enabled packages, ${totalSkills} skills (${result.packageManager})\n`,
+    `\n${result.packages.length} intent-enabled packages, ${result.skills.length} skills\n`,
   )
-  if (scanCoverage) {
-    console.log(
-      `Scanned: ${scanCoverage}${result.nodeModules.global.scanned ? ' (local packages take precedence)' : ''}\n`,
-    )
-  }
 
   const rows = result.packages.map((pkg) => [
     pkg.name,
     pkg.source,
     pkg.version,
-    String(pkg.skills.length),
-    pkg.intent.requires?.join(', ') || '–',
+    String(pkg.skillCount),
   ])
-  printTable(['PACKAGE', 'SOURCE', 'VERSION', 'SKILLS', 'REQUIRES'], rows)
+  printTable(['PACKAGE', 'SOURCE', 'VERSION', 'SKILLS'], rows)
 
   printVersionConflicts(result)
 
-  const allSkills = result.packages.map((pkg) => pkg.skills)
-  const nameWidth = computeSkillNameWidth(allSkills)
-  const showTypes = result.packages.some((pkg) =>
-    pkg.skills.some((skill) => skill.type),
+  const skillsByPackageRoot = groupSkillsByPackageRoot(result.skills)
+  const allSkills = result.packages.map((pkg) =>
+    getPackageSkills(pkg, skillsByPackageRoot).map((skill) => ({
+      name: skill.skillName,
+      description: skill.description,
+      type: skill.type,
+    })),
   )
+  const nameWidth = computeSkillNameWidth(allSkills)
+  const showTypes = result.skills.some((skill) => skill.type)
 
   console.log(`\nSkills:\n`)
   for (const pkg of result.packages) {
     console.log(`  ${pkg.name}`)
-    printSkillTree(pkg.skills, { nameWidth, packageName: pkg.name, showTypes })
+    printSkillTree(
+      getPackageSkills(pkg, skillsByPackageRoot).map((skill) => ({
+        name: skill.skillName,
+        description: skill.description,
+        type: skill.type,
+      })),
+      { nameWidth, packageName: pkg.name, showTypes },
+    )
     console.log()
   }
 

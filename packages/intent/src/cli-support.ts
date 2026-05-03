@@ -3,11 +3,14 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fail } from './cli-error.js'
 import { resolveProjectContext } from './core/project-context.js'
+import type { IntentCoreOptions } from './core.js'
 import type { ScanOptions, ScanResult, StalenessReport } from './types.js'
 
 export { printWarnings } from './cli-output.js'
 
 export interface GlobalScanFlags {
+  debug?: boolean
+  exclude?: string | Array<string>
   global?: boolean
   globalOnly?: boolean
 }
@@ -72,6 +75,43 @@ export function scanOptionsFromGlobalFlags(
   }
 
   return { scope: 'local' }
+}
+
+export function coreOptionsFromGlobalFlags(
+  options: GlobalScanFlags,
+): IntentCoreOptions {
+  if (options.global && options.globalOnly) {
+    fail('Use either --global or --global-only, not both.')
+  }
+
+  return {
+    debug: options.debug,
+    exclude: Array.isArray(options.exclude)
+      ? options.exclude
+      : options.exclude
+        ? [options.exclude]
+        : undefined,
+    global: options.global,
+    globalOnly: options.globalOnly,
+  }
+}
+
+function formatDebugValue(value: string | number | Array<string>): string {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value.join(', ') : '(none)'
+  }
+
+  return String(value)
+}
+
+export function printDebugInfo(
+  title: string,
+  fields: Array<[label: string, value: string | number | Array<string>]>,
+): void {
+  console.error(`Debug: ${title}`)
+  for (const [label, value] of fields) {
+    console.error(`  ${label}: ${formatDebugValue(value)}`)
+  }
 }
 
 export async function resolveStaleTargets(

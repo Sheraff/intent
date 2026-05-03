@@ -4,20 +4,6 @@ import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { cac } from 'cac'
 import { fail, isCliFailure } from './cli-error.js'
-import {
-  getMetaDir,
-  resolveStaleTargets,
-  scanIntentsOrFail,
-} from './cli-support.js'
-import { runEditPackageJsonCommand } from './commands/edit-package-json.js'
-import { runInstallCommand } from './commands/install.js'
-import { runListCommand } from './commands/list.js'
-import { runLoadCommand } from './commands/load.js'
-import { runMetaCommand } from './commands/meta.js'
-import { runScaffoldCommand } from './commands/scaffold.js'
-import { runSetupGithubActionsCommand } from './commands/setup-github-actions.js'
-import { runStaleCommand } from './commands/stale.js'
-import { runValidateCommand } from './commands/validate.js'
 import type { CAC } from 'cac'
 import type { InstallCommandOptions } from './commands/install.js'
 import type { ListCommandOptions } from './commands/list.js'
@@ -34,28 +20,38 @@ function createCli(): CAC {
       'list',
       'Discover intent-enabled packages from the project or workspace',
     )
-    .usage('list [--json] [--global] [--global-only]')
+    .usage(
+      'list [--json] [--debug] [--exclude <pattern>] [--global] [--global-only]',
+    )
     .option('--json', 'Output JSON')
+    .option('--debug', 'Print discovery debug details to stderr')
+    .option('--exclude <pattern>', 'Exclude package name glob')
     .option('--global', 'Include global packages after project packages')
     .option('--global-only', 'List global packages only')
     .example('list')
     .example('list --json')
     .example('list --global')
     .action(async (options: ListCommandOptions) => {
-      await runListCommand(options, scanIntentsOrFail)
+      const { runListCommand } = await import('./commands/list.js')
+      await runListCommand(options)
     })
 
   cli
     .command('load [use]', 'Load a compact skill use and print its SKILL.md')
-    .usage('load <use> [--path] [--json] [--global] [--global-only]')
+    .usage(
+      'load <use> [--path] [--json] [--debug] [--exclude <pattern>] [--global] [--global-only]',
+    )
     .option('--path', 'Print the resolved skill path instead of file content')
     .option('--json', 'Output JSON')
+    .option('--debug', 'Print resolution debug details to stderr')
+    .option('--exclude <pattern>', 'Exclude package name glob')
     .option('--global', 'Load from project packages, then global packages')
     .option('--global-only', 'Load from global packages only')
     .example('load @tanstack/query#core')
     .example('load @tanstack/query#core --path')
     .action(async (use: string | undefined, options: LoadCommandOptions) => {
-      await runLoadCommand(use, options, scanIntentsOrFail)
+      const { runLoadCommand } = await import('./commands/load.js')
+      await runLoadCommand(use, options)
     })
 
   cli
@@ -64,6 +60,10 @@ function createCli(): CAC {
     .example('meta')
     .example('meta domain-discovery')
     .action(async (name?: string) => {
+      const [{ getMetaDir }, { runMetaCommand }] = await Promise.all([
+        import('./cli-support.js'),
+        import('./commands/meta.js'),
+      ])
       await runMetaCommand(name, getMetaDir())
     })
 
@@ -75,6 +75,7 @@ function createCli(): CAC {
     .example('validate packages/query/skills')
     .action(
       async (dir: string | undefined, options: ValidateCommandOptions) => {
+        const { runValidateCommand } = await import('./commands/validate.js')
         await runValidateCommand(dir, options)
       },
     )
@@ -101,13 +102,21 @@ function createCli(): CAC {
     .example('install --print-prompt')
     .example('install --global')
     .action(async (options: InstallCommandOptions) => {
+      const [{ scanIntentsOrFail }, { runInstallCommand }] = await Promise.all([
+        import('./cli-support.js'),
+        import('./commands/install.js'),
+      ])
       await runInstallCommand(options, scanIntentsOrFail)
     })
 
   cli
     .command('scaffold', 'Print maintainer scaffold prompt')
     .usage('scaffold')
-    .action(() => {
+    .action(async () => {
+      const [{ getMetaDir }, { runScaffoldCommand }] = await Promise.all([
+        import('./cli-support.js'),
+        import('./commands/scaffold.js'),
+      ])
       runScaffoldCommand(getMetaDir())
     })
 
@@ -125,6 +134,11 @@ function createCli(): CAC {
     .example('stale --json')
     .action(
       async (targetDir: string | undefined, options: StaleCommandOptions) => {
+        const [{ resolveStaleTargets }, { runStaleCommand }] =
+          await Promise.all([
+            import('./cli-support.js'),
+            import('./commands/stale.js'),
+          ])
         await runStaleCommand(targetDir, options, resolveStaleTargets)
       },
     )
@@ -136,6 +150,8 @@ function createCli(): CAC {
     )
     .usage('edit-package-json')
     .action(async () => {
+      const { runEditPackageJsonCommand } =
+        await import('./commands/edit-package-json.js')
       await runEditPackageJsonCommand(process.cwd())
     })
 
@@ -146,6 +162,11 @@ function createCli(): CAC {
     )
     .usage('setup')
     .action(async () => {
+      const [{ getMetaDir }, { runSetupGithubActionsCommand }] =
+        await Promise.all([
+          import('./cli-support.js'),
+          import('./commands/setup-github-actions.js'),
+        ])
       await runSetupGithubActionsCommand(process.cwd(), getMetaDir())
     })
 
@@ -156,6 +177,11 @@ function createCli(): CAC {
     )
     .usage('setup-github-actions')
     .action(async () => {
+      const [{ getMetaDir }, { runSetupGithubActionsCommand }] =
+        await Promise.all([
+          import('./cli-support.js'),
+          import('./commands/setup-github-actions.js'),
+        ])
       await runSetupGithubActionsCommand(process.cwd(), getMetaDir())
     })
 

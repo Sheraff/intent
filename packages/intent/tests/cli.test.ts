@@ -549,9 +549,10 @@ describe('cli commands', () => {
       packages: Array<{
         name: string
         version: string
-        packageRoot: string
         source: 'local' | 'global'
+        skillCount: number
       }>
+      skills: Array<{ use: string; packageName: string; skillName: string }>
       conflicts: Array<{ packageName: string }>
       warnings: Array<string>
     }
@@ -561,11 +562,47 @@ describe('cli commands', () => {
     expect(parsed.packages[0]).toMatchObject({
       name: '@tanstack/db',
       version: '0.5.2',
-      packageRoot: pkgDir,
       source: 'local',
+      skillCount: 1,
     })
+    expect(parsed.skills).toEqual([
+      expect.objectContaining({
+        use: '@tanstack/db#db-core',
+        packageName: '@tanstack/db',
+        skillName: 'db-core',
+      }),
+    ])
     expect(parsed.conflicts).toEqual([])
     expect(parsed.warnings).toEqual([])
+  })
+
+  it('prints list debug details to stderr without changing json stdout', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-debug-'))
+    tempDirs.push(root)
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+    process.chdir(root)
+
+    const exitCode = await main(['list', '--json', '--debug'])
+    const output = logSpy.mock.calls.at(-1)?.[0]
+    const parsed = JSON.parse(String(output)) as {
+      debug?: unknown
+      packages: Array<{ name: string }>
+    }
+    const debugOutput = errorSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(parsed.debug).toBeUndefined()
+    expect(parsed.packages.map((pkg) => pkg.name)).toEqual(['@tanstack/query'])
+    expect(debugOutput).toContain('Debug: intent list')
+    expect(debugOutput).toContain(`cwd: ${root}`)
+    expect(debugOutput).toContain('scope: local')
+    expect(debugOutput).toContain('packages: 1')
+    expect(debugOutput).toContain('skills: 1')
   })
 
   it('ignores configured global intent packages in list json output by default', async () => {
@@ -592,12 +629,10 @@ describe('cli commands', () => {
     const exitCode = await main(['list', '--json'])
     const output = logSpy.mock.calls.at(-1)?.[0]
     const parsed = JSON.parse(String(output)) as {
-      nodeModules: { global: { scanned: boolean } }
       packages: Array<{ name: string }>
     }
 
     expect(exitCode).toBe(0)
-    expect(parsed.nodeModules.global.scanned).toBe(false)
     expect(parsed.packages).toEqual([])
   })
 
@@ -628,9 +663,15 @@ describe('cli commands', () => {
       packages: Array<{
         name: string
         version: string
-        packageRoot: string
         source: 'local' | 'global'
-        skills: Array<{ path: string }>
+        skillCount: number
+      }>
+      skills: Array<{
+        packageName: string
+        packageSource: 'local' | 'global'
+        packageVersion: string
+        skillName: string
+        use: string
       }>
     }
 
@@ -639,12 +680,16 @@ describe('cli commands', () => {
     expect(parsed.packages[0]).toMatchObject({
       name: '@tanstack/query',
       version: '5.0.0',
-      packageRoot: globalPkgDir,
       source: 'global',
+      skillCount: 1,
     })
-    expect(parsed.packages[0]!.skills[0]!.path).toBe(
-      join(globalPkgDir, 'skills', 'fetching', 'SKILL.md'),
-    )
+    expect(parsed.skills[0]).toMatchObject({
+      packageName: '@tanstack/query',
+      packageSource: 'global',
+      packageVersion: '5.0.0',
+      skillName: 'fetching',
+      use: '@tanstack/query#fetching',
+    })
   })
 
   it('does not print absolute global skill paths in global list output', async () => {
@@ -673,9 +718,6 @@ describe('cli commands', () => {
 
     expect(exitCode).toBe(0)
     expect(output).toContain('Global fetching skill')
-    expect(output).toContain(
-      'Lookup: Runtime lookup only: run `npx @tanstack/intent@latest load @tanstack/query#fetching --path`, and load its reported path for this session. Do not copy the resolved path into this file.',
-    )
     expect(output).not.toContain(globalPkgDir)
   })
 
@@ -762,26 +804,59 @@ describe('cli commands', () => {
     const exitCode = await main(['list', '--global-only', '--json'])
     const output = logSpy.mock.calls.at(-1)?.[0]
     const parsed = JSON.parse(String(output)) as {
-      nodeModules: {
-        global: { scanned: boolean }
-        local: { scanned: boolean }
-      }
       packages: Array<{
         name: string
         source: 'local' | 'global'
         version: string
+        skillCount: number
       }>
     }
 
     expect(exitCode).toBe(0)
-    expect(parsed.nodeModules.local.scanned).toBe(false)
-    expect(parsed.nodeModules.global.scanned).toBe(true)
     expect(parsed.packages).toHaveLength(1)
     expect(parsed.packages[0]).toMatchObject({
       name: '@tanstack/query',
       source: 'global',
       version: '4.0.0',
+      skillCount: 1,
     })
+  })
+
+  it('excludes packages from list output with --exclude', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-exclude-'))
+    tempDirs.push(root)
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/devtools',
+      version: '1.0.0',
+      skillName: 'panel',
+      description: 'Devtools panel skill',
+    })
+
+    process.chdir(root)
+
+    const exitCode = await main([
+      'list',
+      '--json',
+      '--exclude',
+      '@tanstack/*devtools*',
+    ])
+    const output = logSpy.mock.calls.at(-1)?.[0]
+    const parsed = JSON.parse(String(output)) as {
+      packages: Array<{ name: string }>
+      skills: Array<{ use: string }>
+    }
+
+    expect(exitCode).toBe(0)
+    expect(parsed.packages.map((pkg) => pkg.name)).toEqual(['@tanstack/query'])
+    expect(parsed.skills.map((skill) => skill.use)).toEqual([
+      '@tanstack/query#fetching',
+    ])
   })
 
   it('rejects --global and --global-only together on list', async () => {
@@ -925,6 +1000,60 @@ describe('cli commands', () => {
 
     expect(exitCode).toBe(0)
     expect(output).toBe('node_modules/@tanstack/query/skills/fetching/SKILL.md')
+  })
+
+  it('prints a skill path without reading skill content', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-load-path-only-'))
+    tempDirs.push(root)
+    const pkgDir = join(root, 'node_modules', '@tanstack', 'query')
+    writeJson(join(pkgDir, 'package.json'), {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      intent: { version: 1, repo: 'TanStack/query', docs: 'docs/' },
+    })
+    writeSkillMd(join(pkgDir, 'skills', 'fetching'), {
+      name: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+
+    process.chdir(root)
+
+    const exitCode = await main(['load', '@tanstack/query#fetching', '--path'])
+    const output = logSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(output).toBe('node_modules/@tanstack/query/skills/fetching/SKILL.md')
+  })
+
+  it('prints load debug details to stderr without changing path stdout', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-load-debug-'))
+    tempDirs.push(root)
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+
+    process.chdir(root)
+
+    const exitCode = await main([
+      'load',
+      '@tanstack/query#fetching',
+      '--path',
+      '--debug',
+    ])
+    const output = logSpy.mock.calls.flat().join('\n')
+    const debugOutput = errorSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(output).toBe('node_modules/@tanstack/query/skills/fetching/SKILL.md')
+    expect(debugOutput).toContain('Debug: intent load')
+    expect(debugOutput).toContain(`cwd: ${root}`)
+    expect(debugOutput).toContain('scope: local')
+    expect(debugOutput).toContain('resolution: fast-path')
+    expect(debugOutput).toContain('package: @tanstack/query')
+    expect(debugOutput).toContain('skill: fetching')
   })
 
   it('loads a skill use as json', async () => {
@@ -1142,6 +1271,30 @@ describe('cli commands', () => {
     expect(exitCode).toBe(1)
     expect(errorSpy).toHaveBeenCalledWith(
       'Cannot resolve skill use "@tanstack/query#mutations": skill "mutations" was not found in package "@tanstack/query". Available skills: fetching.',
+    )
+  })
+
+  it('fails clearly when loading an excluded package', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-load-exclude-'))
+    tempDirs.push(root)
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/devtools',
+      version: '1.0.0',
+      skillName: 'panel',
+      description: 'Devtools panel skill',
+    })
+    process.chdir(root)
+
+    const exitCode = await main([
+      'load',
+      '@tanstack/devtools#panel',
+      '--exclude',
+      '@tanstack/*devtools*',
+    ])
+
+    expect(exitCode).toBe(1)
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Cannot load skill use "@tanstack/devtools#panel": package "@tanstack/devtools" is excluded by Intent configuration.',
     )
   })
 

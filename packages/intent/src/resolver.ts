@@ -1,5 +1,11 @@
+import { warningMentionsPackage } from './core/excludes.js'
 import { parseSkillUse } from './skill-use.js'
-import type { IntentPackage, ScanResult, VersionConflict } from './types.js'
+import type {
+  IntentPackage,
+  ScanResult,
+  SkillEntry,
+  VersionConflict,
+} from './types.js'
 
 export interface ResolveSkillResult {
   packageName: string
@@ -21,6 +27,7 @@ export class ResolveSkillUseError extends Error {
   readonly skillName: string
   readonly availablePackages: Array<string>
   readonly availableSkills: Array<string>
+  readonly suggestedSkills: Array<string>
 
   constructor({
     availablePackages = [],
@@ -28,6 +35,7 @@ export class ResolveSkillUseError extends Error {
     code,
     packageName,
     skillName,
+    suggestedSkills = [],
     use,
   }: {
     availablePackages?: Array<string>
@@ -35,6 +43,7 @@ export class ResolveSkillUseError extends Error {
     code: ResolveSkillUseErrorCode
     packageName: string
     skillName: string
+    suggestedSkills?: Array<string>
     use: string
   }) {
     super(
@@ -44,12 +53,14 @@ export class ResolveSkillUseError extends Error {
         code,
         packageName,
         skillName,
+        suggestedSkills,
         use,
       }),
     )
     this.name = 'ResolveSkillUseError'
     this.availablePackages = availablePackages
     this.availableSkills = availableSkills
+    this.suggestedSkills = suggestedSkills
     this.code = code
     this.packageName = packageName
     this.skillName = skillName
@@ -61,6 +72,75 @@ export function isResolveSkillUseError(
   error: unknown,
 ): error is ResolveSkillUseError {
   return error instanceof ResolveSkillUseError
+}
+
+export interface ResolveSkillEntryResult {
+  skill: SkillEntry | null
+  suggestedSkills: Array<string>
+}
+
+function getPackageShortName(packageName: string): string {
+  return packageName.split('/').pop() ?? packageName
+}
+
+function getPackagePrefixedSkillAlias(
+  packageName: string,
+  skillName: string,
+): string | null {
+  const prefix = `${getPackageShortName(packageName)}/`
+  return skillName.startsWith(prefix) ? skillName.slice(prefix.length) : null
+}
+
+function getSuggestedSkills(
+  packageName: string,
+  skillName: string,
+  skills: Array<SkillEntry>,
+): Array<string> {
+  const lowerSkillName = skillName.toLowerCase()
+  const suggestions: Array<string> = []
+  const seen = new Set<string>()
+
+  for (const skill of skills) {
+    const alias = getPackagePrefixedSkillAlias(packageName, skill.name)
+    const lowerName = skill.name.toLowerCase()
+    const lowerAlias = alias?.toLowerCase()
+    const matches =
+      lowerAlias === lowerSkillName ||
+      lowerName.includes(lowerSkillName) ||
+      lowerAlias?.includes(lowerSkillName)
+
+    if (!matches || seen.has(skill.name)) continue
+
+    seen.add(skill.name)
+    suggestions.push(skill.name)
+  }
+
+  return suggestions.slice(0, 3)
+}
+
+export function resolveSkillEntry(
+  packageName: string,
+  skillName: string,
+  skills: Array<SkillEntry>,
+): ResolveSkillEntryResult {
+  const exact = skills.find((candidate) => candidate.name === skillName)
+  if (exact) {
+    return { skill: exact, suggestedSkills: [] }
+  }
+
+  const aliasMatches = skills.filter(
+    (candidate) =>
+      getPackagePrefixedSkillAlias(packageName, candidate.name) === skillName,
+  )
+
+  if (aliasMatches.length === 1) {
+    return { skill: aliasMatches[0]!, suggestedSkills: [] }
+  }
+
+  return {
+    skill: null,
+    suggestedSkills: getSuggestedSkills(packageName, skillName, skills),
+  }
 }
 
 export function resolveSkillUse(
@@ -82,7 +162,8 @@ export function resolveSkillUse(
     })
   }
 
-  const skill = pkg.skills.find((candidate) => candidate.name === skillName)
+  const resolvedSkill = resolveSkillEntry(packageName, skillName, pkg.skills)
+  const skill = resolvedSkill.skill
 
   if (!skill) {
     throw new ResolveSkillUseError({
@@ -90,6 +171,7 @@ export function resolveSkillUse(
       code: 'skill-not-found',
       packageName,
       skillName,
+      suggestedSkills: resolvedSkill.suggestedSkills,
       use,
     })
   }
@@ -101,17 +183,14 @@ export function resolveSkillUse(
 
   return {
     packageName,
-    skillName,
+    skillName: skill.name,
     path: skill.path,
     source: pkg.source,
     version: pkg.version,
     packageRoot: pkg.packageRoot,
-    warnings: scanResult.warnings.filter((warning) => {
-      const idx = warning.indexOf(packageName)
-      if (idx === -1) return false
-      const after = warning[idx + packageName.length]
-      return after === undefined || /[^a-zA-Z0-9_-]/.test(after)
-    }),
+    warnings: scanResult.warnings.filter((warning) =>
+      warningMentionsPackage(warning, packageName),
+    ),
     conflict,
   }
 }
@@ -122,6 +201,7 @@ function formatResolveSkillUseErrorMessage({
   code,
   packageName,
   skillName,
+  suggestedSkills,
   use,
 }: {
   availablePackages: Array<string>
@@ -129,6 +209,7 @@ function formatResolveSkillUseErrorMessage({
   code: ResolveSkillUseErrorCode
   packageName: string
   skillName: string
+  suggestedSkills: Array<string>
   use: string
 }): string {
   switch (code) {
@@ -140,11 +221,28 @@ function formatResolveSkillUseErrorMessage({
       return `Cannot resolve skill use "${use}": package "${packageName}" was not found.${available}`
     }
     case 'skill-not-found': {
+      const suggestions =
+        suggestedSkills.length > 0
+          ? ` Did you mean ${formatSkillSuggestions(packageName, suggestedSkills)}?`
+          : ''
       const available =
         availableSkills.length > 0
           ? ` Available skills: ${availableSkills.join(', ')}.`
           : ''
-      return `Cannot resolve skill use "${use}": skill "${skillName}" was not found in package "${packageName}".${available}`
+      return `Cannot resolve skill use "${use}": skill "${skillName}" was not found in package "${packageName}".${suggestions}${available}`
     }
   }
+}
+
+function formatSkillSuggestions(
+  packageName: string,
+  skillNames: Array<string>,
+): string {
+  const uses = skillNames.map((skillName) => `${packageName}#${skillName}`)
+
+  if (uses.length <= 2) {
+    return uses.join(' or ')
+  }
+
+  return `${uses.slice(0, -1).join(', ')}, or ${uses.at(-1)}`
 }

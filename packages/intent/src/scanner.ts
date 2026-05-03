@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, type Dirent } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   createDependencyWalker,
   createPackageRegistrar,
@@ -223,10 +223,54 @@ function deriveIntentConfig(
 // Skill discovery within a package
 // ---------------------------------------------------------------------------
 
-function discoverSkills(
+function readSkillEntry(
   skillsDir: string,
-  _baseName: string,
+  childDir: string,
+  skillFile: string,
+): SkillEntry {
+  const fm = parseFrontmatter(skillFile)
+  const relName = toPosixPath(relative(skillsDir, childDir))
+  const desc =
+    typeof fm?.description === 'string'
+      ? fm.description.replace(/\s+/g, ' ').trim()
+      : ''
+
+  return {
+    name: typeof fm?.name === 'string' ? fm.name : relName,
+    path: skillFile,
+    description: desc,
+    type: typeof fm?.type === 'string' ? fm.type : undefined,
+    framework: typeof fm?.framework === 'string' ? fm.framework : undefined,
+  }
+}
+
+function discoverSkillByNameHint(
+  skillsDir: string,
+  packageName: string,
+  skillNameHint: string,
 ): Array<SkillEntry> {
+  const skills: Array<SkillEntry> = []
+  const seen = new Set<string>()
+  const skillNameHints = getSkillNameHints(packageName, skillNameHint)
+
+  for (const hint of skillNameHints) {
+    const resolvedHint = resolveSkillNameHintPath(skillsDir, hint)
+    if (!resolvedHint) continue
+
+    const { childDir, skillFile } = resolvedHint
+    if (!existsSync(skillFile)) continue
+
+    const skill = readSkillEntry(skillsDir, childDir, skillFile)
+    if (skill.name !== hint || seen.has(skill.name)) continue
+
+    seen.add(skill.name)
+    skills.push(skill)
+  }
+
+  return skills
+}
+
+function discoverSkills(skillsDir: string): Array<SkillEntry> {
   const skills: Array<SkillEntry> = []
 
   function walk(dir: string): void {
@@ -241,20 +285,7 @@ function discoverSkills(
       const childDir = join(dir, entry.name)
       const skillFile = join(childDir, 'SKILL.md')
       if (existsSync(skillFile)) {
-        const fm = parseFrontmatter(skillFile)
-        const relName = toPosixPath(relative(skillsDir, childDir))
-        const desc =
-          typeof fm?.description === 'string'
-            ? fm.description.replace(/\s+/g, ' ').trim()
-            : ''
-        skills.push({
-          name: typeof fm?.name === 'string' ? fm.name : relName,
-          path: skillFile,
-          description: desc,
-          type: typeof fm?.type === 'string' ? fm.type : undefined,
-          framework:
-            typeof fm?.framework === 'string' ? fm.framework : undefined,
-        })
+        skills.push(readSkillEntry(skillsDir, childDir, skillFile))
       }
       // Always recurse into subdirectories so skills nested under
       // intermediate grouping directories (dirs without SKILL.md) are found.
@@ -264,6 +295,53 @@ function discoverSkills(
 
   walk(skillsDir)
   return skills
+}
+
+function getPackageShortName(packageName: string): string {
+  return packageName.split('/').pop() ?? packageName
+}
+
+function isWithinOrEqual(path: string, parentDir: string): boolean {
+  const rel = relative(parentDir, path)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+function resolveSkillNameHintPath(
+  skillsDir: string,
+  hint: string,
+): { childDir: string; skillFile: string } | null {
+  if (hint.startsWith('/') || hint.startsWith('\\')) return null
+
+  const parts = hint.split('/')
+  if (
+    parts.some(
+      (part) =>
+        part === '' || part === '.' || part === '..' || part.includes('\\'),
+    )
+  ) {
+    return null
+  }
+
+  const resolvedSkillsDir = resolve(skillsDir)
+  const childDir = resolve(resolvedSkillsDir, ...parts)
+  if (!isWithinOrEqual(childDir, resolvedSkillsDir)) return null
+
+  return {
+    childDir,
+    skillFile: join(childDir, 'SKILL.md'),
+  }
+}
+
+function getSkillNameHints(
+  packageName: string,
+  skillNameHint: string,
+): Array<string> {
+  const packageShortName = getPackageShortName(packageName)
+  if (skillNameHint.startsWith(`${packageShortName}/`)) {
+    return [skillNameHint]
+  }
+
+  return [skillNameHint, `${packageShortName}/${skillNameHint}`]
 }
 
 // ---------------------------------------------------------------------------
@@ -570,10 +648,18 @@ export function scanForIntents(
     }
 
     assertLocalNodeModulesSupported(projectRoot)
-    scanTarget(nodeModules.local)
     walkWorkspacePackages()
+    const packageCountBeforeDependencyDiscovery = packages.length
+    scanTarget(nodeModules.local)
     walkKnownPackages()
     walkProjectDeps()
+
+    if (packages.length === packageCountBeforeDependencyDiscovery) {
+      const api = getPnpApi()
+      if (api) {
+        scanPnpPackages(api)
+      }
+    }
   }
 
   function scanGlobalPackages(): void {
@@ -619,4 +705,76 @@ export function scanForIntents(
   const sorted = topoSort(packages)
 
   return { packageManager, packages: sorted, warnings, conflicts, nodeModules }
+}
+
+export interface ScanIntentPackageAtRootOptions {
+  fallbackName?: string
+  projectRoot?: string
+  source?: IntentPackage['source']
+  skillNameHint?: string
+}
+
+export interface ScanIntentPackageAtRootResult {
+  package: IntentPackage | null
+  warnings: Array<string>
+}
+
+export function scanIntentPackageAtRoot(
+  packageRoot: string,
+  options: ScanIntentPackageAtRootOptions = {},
+): ScanIntentPackageAtRootResult {
+  const projectRoot = options.projectRoot ?? packageRoot
+  const packages: Array<IntentPackage> = []
+  const warnings: Array<string> = []
+  const packageIndexes = new Map<string, number>()
+  const packageJsonCache = new Map<string, Record<string, unknown> | null>()
+
+  function readPkgJson(dirPath: string): Record<string, unknown> | null {
+    if (packageJsonCache.has(dirPath)) {
+      return packageJsonCache.get(dirPath) ?? null
+    }
+
+    try {
+      const pkgJson = JSON.parse(
+        readFileSync(join(dirPath, 'package.json'), 'utf8'),
+      ) as Record<string, unknown>
+      packageJsonCache.set(dirPath, pkgJson)
+      return pkgJson
+    } catch {
+      packageJsonCache.set(dirPath, null)
+      return null
+    }
+  }
+
+  const { tryRegister } = createPackageRegistrar({
+    comparePackageVersions,
+    deriveIntentConfig,
+    discoverSkills: options.skillNameHint
+      ? (skillsDir, packageName) =>
+          discoverSkillByNameHint(
+            skillsDir,
+            packageName,
+            options.skillNameHint!,
+          )
+      : discoverSkills,
+    getPackageDepth,
+    packageIndexes,
+    packages,
+    projectRoot,
+    readPkgJson,
+    rememberVariant() {},
+    validateIntentField,
+    warnings,
+  })
+
+  tryRegister(
+    packageRoot,
+    options.fallbackName ?? 'unknown',
+    options.source ?? 'local',
+  )
+
+  return {
+    package: packages[0] ?? null,
+    warnings,
+  }
 }
