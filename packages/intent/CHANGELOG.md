@@ -1,5 +1,11 @@
 # @tanstack/intent
 
+## 0.0.41
+
+### Patch Changes
+
+- Fix package discovery for Yarn PnP projects and pnpm symlinked dependency trees, and use the detected package manager when printing Intent commands. ([#130](https://github.com/TanStack/intent/pull/130))
+
 ## 0.0.40
 
 ### Patch Changes
