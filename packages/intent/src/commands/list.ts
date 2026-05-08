@@ -4,6 +4,7 @@ import {
   printWarnings,
   type GlobalScanFlags,
 } from '../cli-support.js'
+import { formatIntentCommand } from '../command-runner.js'
 import { listIntentSkills } from '../core.js'
 import type {
   IntentPackageSummary,
@@ -75,6 +76,14 @@ function getPackageSkills(
   return skillsByPackageRoot.get(pkg.packageRoot) ?? []
 }
 
+function formatLoadCommand(
+  skill: IntentSkillSummary,
+  packageManager: ScanResult['packageManager'],
+  scopeFlag: string,
+): string {
+  return formatIntentCommand(packageManager, `load ${skill.use}${scopeFlag}`)
+}
+
 export async function runListCommand(
   options: ListCommandOptions,
   _scanIntentsOrFail?: (options?: ScanOptions) => Promise<ScanResult>,
@@ -83,7 +92,11 @@ export async function runListCommand(
   printListDebug(result)
 
   if (options.json) {
-    const { debug: _debug, ...jsonResult } = result
+    const {
+      debug: _debug,
+      packageManager: _packageManager,
+      ...jsonResult
+    } = result
     console.log(JSON.stringify(jsonResult, null, 2))
     return
   }
@@ -124,6 +137,11 @@ export async function runListCommand(
   )
   const nameWidth = computeSkillNameWidth(allSkills)
   const showTypes = result.skills.some((skill) => skill.type)
+  const scopeFlag = options.globalOnly
+    ? ' --global-only'
+    : options.global
+      ? ' --global'
+      : ''
 
   console.log(`\nSkills:\n`)
   for (const pkg of result.packages) {
@@ -132,6 +150,7 @@ export async function runListCommand(
       getPackageSkills(pkg, skillsByPackageRoot).map((skill) => ({
         name: skill.skillName,
         description: skill.description,
+        loadCommand: formatLoadCommand(skill, result.packageManager, scopeFlag),
         type: skill.type,
       })),
       { nameWidth, packageName: pkg.name, showTypes },

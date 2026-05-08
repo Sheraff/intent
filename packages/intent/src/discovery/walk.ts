@@ -1,5 +1,9 @@
 import { join } from 'node:path'
-import { resolveDepDir, getDeps } from '../utils.js'
+import {
+  getDeps,
+  listNestedNodeModulesPackageDirs,
+  resolveDepDir,
+} from '../utils.js'
 import { findWorkspacePackages } from '../workspace-patterns.js'
 import type { IntentFsCache } from '../fs-cache.js'
 import type { IntentPackage } from '../types.js'
@@ -10,6 +14,7 @@ export interface CreateDependencyWalkerOptions {
   fsCache: IntentFsCache
   projectRoot: string
   readPkgJson: (dirPath: string) => PackageJson | null
+  getFsIdentity: (path: string) => string
   scanNodeModulesDir: (nodeModulesDir: string) => void
   tryRegister: (dirPath: string, fallbackName: string) => boolean
   packages: Array<IntentPackage>
@@ -24,10 +29,11 @@ export function createDependencyWalker(opts: CreateDependencyWalkerOptions) {
     depName: string,
     fromDir: string,
   ): string | null {
-    let byDepName = depDirCache.get(fromDir)
+    const fromKey = opts.getFsIdentity(fromDir)
+    let byDepName = depDirCache.get(fromKey)
     if (!byDepName) {
       byDepName = new Map()
-      depDirCache.set(fromDir, byDepName)
+      depDirCache.set(fromKey, byDepName)
     }
 
     if (!byDepName.has(depName)) {
@@ -44,7 +50,7 @@ export function createDependencyWalker(opts: CreateDependencyWalkerOptions) {
   ): void {
     for (const depName of getDeps(pkgJson, includeDevDeps)) {
       const depDir = resolveDepDirCached(depName, fromDir)
-      if (!depDir || walkVisited.has(depDir)) continue
+      if (!depDir) continue
 
       opts.tryRegister(depDir, depName)
       walkDeps(depDir, depName)
@@ -52,8 +58,9 @@ export function createDependencyWalker(opts: CreateDependencyWalkerOptions) {
   }
 
   function walkDeps(pkgDir: string, pkgName: string): void {
-    if (walkVisited.has(pkgDir)) return
-    walkVisited.add(pkgDir)
+    const pkgKey = opts.getFsIdentity(pkgDir)
+    if (walkVisited.has(pkgKey)) return
+    walkVisited.add(pkgKey)
 
     const pkgJson = opts.readPkgJson(pkgDir)
     if (!pkgJson) {
@@ -111,7 +118,22 @@ export function createDependencyWalker(opts: CreateDependencyWalkerOptions) {
     }
   }
 
+  function scanNestedNodeModulesDir(nodeModulesDir: string): void {
+    for (const dirPath of listNestedNodeModulesPackageDirs(
+      nodeModulesDir,
+      opts.getFsIdentity,
+    )) {
+      if (!opts.tryRegister(dirPath, 'unknown')) continue
+
+      const pkgJson = opts.readPkgJson(dirPath)
+      const pkgName =
+        typeof pkgJson?.name === 'string' ? pkgJson.name : 'unknown'
+      walkDeps(dirPath, pkgName)
+    }
+  }
+
   return {
+    scanNestedNodeModulesDir,
     walkKnownPackages,
     walkProjectDeps,
     walkWorkspacePackages,

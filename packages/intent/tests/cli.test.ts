@@ -289,6 +289,25 @@ describe('cli commands', () => {
     expect(existsSync(join(root, 'AGENTS.md'))).toBe(false)
   })
 
+  it('prints package-manager-specific install guidance', async () => {
+    const root = mkdtempSync(
+      join(realTmpdir, 'intent-cli-install-package-runner-'),
+    )
+    tempDirs.push(root)
+    writeFileSync(join(root, 'pnpm-lock.yaml'), '')
+
+    process.chdir(root)
+
+    const exitCode = await main(['install', '--dry-run'])
+    const output = logSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(output).toContain('pnpm dlx @tanstack/intent@latest list')
+    expect(output).toContain(
+      'pnpm dlx @tanstack/intent@latest load <package>#<skill>',
+    )
+  })
+
   it('writes skill loading guidance even with no discovered skills', async () => {
     const root = mkdtempSync(join(realTmpdir, 'intent-cli-install-empty-'))
     const isolatedGlobalRoot = mkdtempSync(
@@ -576,6 +595,106 @@ describe('cli commands', () => {
     expect(parsed.warnings).toEqual([])
   })
 
+  it('prints full load commands for every skill in human list output', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-load-commands-'))
+    tempDirs.push(root)
+    const pkgDir = join(root, 'node_modules', '@tanstack', 'query')
+
+    writeJson(join(pkgDir, 'package.json'), {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      intent: { version: 1, repo: 'TanStack/query', docs: 'docs/' },
+    })
+    writeSkillMd(join(pkgDir, 'skills', 'fetching'), {
+      name: 'fetching',
+      description: 'Query fetching skill',
+    })
+    writeSkillMd(join(pkgDir, 'skills', 'query', 'cache'), {
+      name: 'query/cache',
+      description: 'Query cache skill',
+    })
+
+    process.chdir(root)
+
+    const exitCode = await main(['list'])
+    const output = logSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(output).toContain(
+      'Load: npx @tanstack/intent@latest load @tanstack/query#fetching',
+    )
+    expect(output).toContain(
+      'Load: npx @tanstack/intent@latest load @tanstack/query#query/cache',
+    )
+  })
+
+  it.each([
+    ['pnpm-lock.yaml', 'pnpm dlx @tanstack/intent@latest'],
+    ['yarn.lock', 'yarn dlx @tanstack/intent@latest'],
+    ['bun.lock', 'bunx @tanstack/intent@latest'],
+  ])(
+    'prints %s load commands for human list output',
+    async (lockfile, runner) => {
+      const root = mkdtempSync(
+        join(realTmpdir, 'intent-cli-list-package-runner-'),
+      )
+      tempDirs.push(root)
+      writeFileSync(join(root, lockfile), '')
+      writeInstalledIntentPackage(root, {
+        name: '@tanstack/query',
+        version: '5.0.0',
+        skillName: 'fetching',
+        description: 'Query fetching skill',
+      })
+
+      process.chdir(root)
+
+      const exitCode = await main(['list'])
+      const output = logSpy.mock.calls.flat().join('\n')
+
+      expect(exitCode).toBe(0)
+      expect(output).toContain(`Load: ${runner} load @tanstack/query#fetching`)
+    },
+  )
+
+  it('does not print warning noise for normal pnpm list output', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-pnpm-clean-'))
+    tempDirs.push(root)
+    writeFileSync(join(root, 'pnpm-lock.yaml'), '')
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      dependencies: {
+        wrapper: '1.0.0',
+      },
+    })
+
+    const wrapperDir = join(root, 'node_modules', 'wrapper')
+    writeJson(join(wrapperDir, 'package.json'), {
+      name: 'wrapper',
+      version: '1.0.0',
+      dependencies: {
+        '@tanstack/query': '5.0.0',
+      },
+    })
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query fetching skill',
+    })
+
+    process.chdir(root)
+
+    const exitCode = await main(['list'])
+    const output = logSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(output).toContain('@tanstack/query')
+    expect(output).not.toContain('Warnings:')
+    expect(output).not.toContain('Could not read')
+  })
+
   it('prints list debug details to stderr without changing json stdout', async () => {
     const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-debug-'))
     tempDirs.push(root)
@@ -720,6 +839,9 @@ describe('cli commands', () => {
 
     expect(exitCode).toBe(0)
     expect(output).toContain('Global fetching skill')
+    expect(output).toContain(
+      'Load: npx @tanstack/intent@latest load @tanstack/query#fetching --global',
+    )
     expect(output).not.toContain(globalPkgDir)
   })
 

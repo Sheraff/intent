@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { findSkillFiles as findSkillFilesUncached } from './utils.js'
+import { join } from 'node:path'
+import {
+  createFsIdentityCache,
+  findSkillFiles as findSkillFilesUncached,
+} from './utils.js'
 
 type PackageJsonReadResult = {
   packageJson: Record<string, unknown> | null
@@ -16,11 +19,8 @@ export type IntentFsCache = {
   readPackageJson: (dir: string) => Record<string, unknown> | null
   readPackageJsonResult: (dir: string) => PackageJsonReadResult
   findSkillFiles: (dir: string) => Array<string>
+  getFsIdentity: (path: string) => string
   getStats: () => IntentFsCacheStats
-}
-
-function normalizeCacheKey(path: string): string {
-  return resolve(path)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -30,13 +30,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createIntentFsCache(): IntentFsCache {
   const packageJsonCache = new Map<string, PackageJsonReadResult>()
   const skillFilesCache = new Map<string, Array<string>>()
+  const getFsIdentity = createFsIdentityCache()
   const stats: IntentFsCacheStats = {
     packageJsonReadCount: 0,
     packageJsonCacheHits: 0,
   }
 
   function readPackageJsonResult(dir: string): PackageJsonReadResult {
-    const key = normalizeCacheKey(dir)
+    const key = getFsIdentity(dir)
     const cached = packageJsonCache.get(key)
     if (cached) {
       stats.packageJsonCacheHits += 1
@@ -66,7 +67,7 @@ export function createIntentFsCache(): IntentFsCache {
   }
 
   function findSkillFiles(dir: string): Array<string> {
-    const key = normalizeCacheKey(dir)
+    const key = getFsIdentity(dir)
     const cached = skillFilesCache.get(key)
     if (cached) {
       return [...cached]
@@ -81,6 +82,7 @@ export function createIntentFsCache(): IntentFsCache {
     readPackageJson,
     readPackageJsonResult,
     findSkillFiles,
+    getFsIdentity,
     getStats: () => ({ ...stats }),
   }
 }

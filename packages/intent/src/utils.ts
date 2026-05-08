@@ -1,7 +1,14 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, type Dirent } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  type Dirent,
+} from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 
 /**
@@ -9,6 +16,28 @@ import { parse as parseYaml } from 'yaml'
  */
 export function toPosixPath(p: string): string {
   return p.split(sep).join('/')
+}
+
+export function createFsIdentityCache(): (path: string) => string {
+  const cache = new Map<string, string>()
+
+  return (path: string): string => {
+    const resolved = resolve(path)
+    const cached = cache.get(resolved)
+    if (cached) return cached
+
+    let identity: string
+    try {
+      identity = lstatSync(resolved).isSymbolicLink()
+        ? realpathSync(resolved)
+        : resolved
+    } catch {
+      identity = resolved
+    }
+
+    cache.set(resolved, identity)
+    return identity
+  }
 }
 
 /**
@@ -100,6 +129,59 @@ export function listNodeModulesPackageDirs(
     }
   }
 
+  return packageDirs
+}
+
+export function listNestedNodeModulesPackageDirs(
+  nodeModulesDir: string,
+  getFsIdentity = createFsIdentityCache(),
+): Array<string> {
+  const packageDirs: Array<string> = []
+  const visitedNodeModulesDirs = new Set<string>()
+  const visitedPackageDirs = new Set<string>()
+
+  function readDir(dir: string): Array<Dirent<string>> {
+    try {
+      return readdirSync(dir, { withFileTypes: true, encoding: 'utf8' })
+    } catch {
+      return []
+    }
+  }
+
+  function addPackageDir(packageDir: string): void {
+    const key = getFsIdentity(packageDir)
+    if (visitedPackageDirs.has(key)) return
+    visitedPackageDirs.add(key)
+
+    if (existsSync(join(packageDir, 'package.json'))) {
+      packageDirs.push(packageDir)
+    }
+
+    scanNodeModulesDir(join(packageDir, 'node_modules'))
+  }
+
+  function scanNodeModulesDir(dir: string): void {
+    const key = getFsIdentity(dir)
+    if (visitedNodeModulesDirs.has(key)) return
+    visitedNodeModulesDirs.add(key)
+
+    for (const entry of readDir(dir)) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+      const dirPath = join(dir, entry.name)
+
+      if (entry.name.startsWith('@')) {
+        for (const scoped of readDir(dirPath)) {
+          if (!scoped.isDirectory() && !scoped.isSymbolicLink()) continue
+          addPackageDir(join(dirPath, scoped.name))
+        }
+        continue
+      }
+
+      if (!entry.name.startsWith('.')) addPackageDir(dirPath)
+    }
+  }
+
+  scanNodeModulesDir(nodeModulesDir)
   return packageDirs
 }
 

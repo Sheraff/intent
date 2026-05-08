@@ -12,6 +12,7 @@ import {
   toPosixPath,
 } from './utils.js'
 import { createIntentFsCache, type IntentFsCache } from './fs-cache.js'
+import { detectPackageManager } from './package-manager.js'
 import { findWorkspaceRoot } from './workspace-patterns.js'
 import type {
   InstalledVariant,
@@ -24,11 +25,6 @@ import type {
   VersionConflict,
 } from './types.js'
 
-// ---------------------------------------------------------------------------
-// Package manager detection
-// ---------------------------------------------------------------------------
-
-type PackageManager = ScanResult['packageManager']
 type ScanOptionsWithFsCache = ScanOptions & {
   fsCache?: IntentFsCache
 }
@@ -70,10 +66,6 @@ function findPnpFile(start: string): string | null {
   }
 }
 
-function isYarnPnpProject(root: string): boolean {
-  return findPnpFile(root) !== null
-}
-
 function assertLocalNodeModulesSupported(root: string): void {
   if (
     existsSync(join(root, 'deno.json')) &&
@@ -85,33 +77,11 @@ function assertLocalNodeModulesSupported(root: string): void {
   }
 }
 
-function detectPackageManager(root: string): PackageManager {
-  const dirsToCheck = [root]
-  const wsRoot = findWorkspaceRoot(root)
-  if (wsRoot && wsRoot !== root) dirsToCheck.push(wsRoot)
-
-  for (const dir of dirsToCheck) {
-    if (isYarnPnpProject(dir)) return 'yarn'
-    if (existsSync(join(dir, 'pnpm-lock.yaml'))) return 'pnpm'
-    if (existsSync(join(dir, 'bun.lockb')) || existsSync(join(dir, 'bun.lock')))
-      return 'bun'
-    if (existsSync(join(dir, 'yarn.lock'))) return 'yarn'
-    if (existsSync(join(dir, 'package-lock.json'))) return 'npm'
-  }
-  return 'unknown'
-}
-
 function loadPnpApi(root: string): PnpApi | null {
   const pnpPath = findPnpFile(root)
   if (!pnpPath) return null
 
   try {
-    const moduleApi = requireFromHere('node:module') as {
-      findPnpApi?: (lookupSource: string) => PnpApi | null
-    }
-    const foundApi = moduleApi.findPnpApi?.(root)
-    if (foundApi) return foundApi
-
     const pnpModule = requireFromHere(pnpPath) as PnpApi
     if (typeof pnpModule.setup === 'function') {
       pnpModule.setup()
@@ -127,6 +97,16 @@ function loadPnpApi(root: string): PnpApi | null {
     const projectRequire = createRequire(join(dirname(pnpPath), 'package.json'))
     return projectRequire('pnpapi') as PnpApi
   } catch (err) {
+    try {
+      const moduleApi = requireFromHere('node:module') as {
+        findPnpApi?: (lookupSource: string) => PnpApi | null
+      }
+      const foundApi = moduleApi.findPnpApi?.(root)
+      if (foundApi) return foundApi
+    } catch {
+      // Ignore and report the project PnP load error below.
+    }
+
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(
       `Yarn PnP project detected, but Intent could not load Yarn's PnP API from ${pnpPath}: ${msg}`,
@@ -434,7 +414,8 @@ export function scanForIntents(
   const scanScope = getScanScope(options)
   const fsCache =
     (options as ScanOptionsWithFsCache).fsCache ?? createIntentFsCache()
-  const packageManager = detectPackageManager(projectRoot)
+  const workspaceRoot = findWorkspaceRoot(projectRoot)
+  const packageManager = detectPackageManager(projectRoot, [workspaceRoot])
   const nodeModulesDir = join(projectRoot, 'node_modules')
   const explicitGlobalNodeModules =
     process.env.INTENT_GLOBAL_NODE_MODULES?.trim() || null
@@ -515,6 +496,7 @@ export function scanForIntents(
       deriveIntentConfig,
       discoverSkills: (skillsDir) => discoverSkills(skillsDir, fsCache),
       getPackageDepth,
+      getFsIdentity: fsCache.getFsIdentity,
       packageIndexes,
       packages,
       projectRoot,
@@ -524,20 +506,24 @@ export function scanForIntents(
       warnings,
     })
 
-  const { walkKnownPackages, walkProjectDeps, walkWorkspacePackages } =
-    createDependencyWalker({
-      fsCache,
-      packages,
-      projectRoot,
-      readPkgJson,
-      scanNodeModulesDir,
-      tryRegister,
-      warnings,
-    })
+  const {
+    scanNestedNodeModulesDir,
+    walkKnownPackages,
+    walkProjectDeps,
+    walkWorkspacePackages,
+  } = createDependencyWalker({
+    fsCache,
+    getFsIdentity: fsCache.getFsIdentity,
+    packages,
+    projectRoot,
+    readPkgJson,
+    scanNodeModulesDir,
+    tryRegister,
+    warnings,
+  })
 
   function scanPnpPackages(api: PnpApi): void {
     const visited = new Set<string>()
-    const workspaceRoot = findWorkspaceRoot(projectRoot)
     const projectLocator = api.findPackageLocator?.(
       projectRoot.endsWith(sep) ? projectRoot : `${projectRoot}${sep}`,
     )
@@ -582,13 +568,24 @@ export function scanForIntents(
     }
 
     assertLocalNodeModulesSupported(projectRoot)
+    const packageCountBeforeLocalDiscovery = packages.length
     walkWorkspacePackages()
     const packageCountBeforeDependencyDiscovery = packages.length
     scanTarget(nodeModules.local)
     walkKnownPackages()
     walkProjectDeps()
+    const shouldTryPnpFallback =
+      packages.length === packageCountBeforeDependencyDiscovery
 
-    if (packages.length === packageCountBeforeDependencyDiscovery) {
+    if (
+      nodeModules.local.path &&
+      nodeModules.local.exists &&
+      packages.length === packageCountBeforeLocalDiscovery
+    ) {
+      scanNestedNodeModulesDir(nodeModules.local.path)
+    }
+
+    if (shouldTryPnpFallback) {
       const api = getPnpApi()
       if (api) {
         scanPnpPackages(api)
@@ -694,6 +691,7 @@ export function scanIntentPackageAtRoot(
           )
       : (skillsDir) => discoverSkills(skillsDir, fsCache),
     getPackageDepth,
+    getFsIdentity: fsCache.getFsIdentity,
     packageIndexes,
     packages,
     projectRoot,
