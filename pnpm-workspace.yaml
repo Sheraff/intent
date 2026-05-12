@@ -11,3 +11,9 @@ packageExtensions:
 packages:
   - 'benchmarks/*'
   - 'packages/*'
+
+allowBuilds:
+  core-js: false
+  esbuild: true
+  nx: false
+  unrs-resolver: false
