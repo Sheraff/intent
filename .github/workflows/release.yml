@@ -13,20 +13,23 @@ env:
   SERVER_PRESET: 'node-server'
 
 permissions:
-  contents: write
-  id-token: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release:
     name: Release
     if: "!contains(github.event.head_commit.message, 'ci: changeset release')"
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check for changesets
         id: changesets
         run: |
@@ -61,7 +64,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .
           if git commit -m "ci: changeset release"; then
-            git push
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
         env:
@@ -80,10 +83,14 @@ jobs:
           fi
       - name: Publish Packages
         if: steps.commit.outputs.committed == 'true'
-        run: pnpm run changeset:publish ${{ steps.dist-tag.outputs.tag && format('--tag {0}', steps.dist-tag.outputs.tag) }}
+        run: pnpm run changeset:publish ${DIST_TAG_ARG}
+        env:
+          DIST_TAG_ARG: ${{ steps.dist-tag.outputs.tag && format('--tag {0}', steps.dist-tag.outputs.tag) }}
       - name: Create GitHub Release
         if: steps.commit.outputs.committed == 'true'
-        run: node scripts/create-github-release.mjs ${{ steps.dist-tag.outputs.prerelease == 'true' && '--prerelease' }} ${{ steps.dist-tag.outputs.latest == 'true' && '--latest' }}
+        run: node scripts/create-github-release.mjs ${PRERELEASE_ARG} ${LATEST_ARG}
         env:
+          PRERELEASE_ARG: ${{ steps.dist-tag.outputs.prerelease == 'true' && '--prerelease' }}
+          LATEST_ARG: ${{ steps.dist-tag.outputs.latest == 'true' && '--latest' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
