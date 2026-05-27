@@ -46,10 +46,11 @@
     ]
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.29.8",
     "@faker-js/faker": "^10.2.0",
-    "@svitejs/changesets-changelog-github-compact": "^1.2.0",
     "@tanstack/eslint-config": "0.4.0",
+    "@tanstack/typedoc-config": "^0.3.3",
     "@types/node": "^25.0.7",
     "eslint": "^9.39.2",
     "eslint-plugin-unused-imports": "^4.3.0",
@@ -65,8 +66,5 @@
     "vitest": "^4.0.17",
     "yaml": "2.8.3"
   },
-  "overrides": {},
-  "dependencies": {
-    "@tanstack/typedoc-config": "^0.3.3"
-  }
+  "overrides": {}
 }
