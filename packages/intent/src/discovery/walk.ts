@@ -58,6 +58,8 @@ export function createDependencyWalker(opts: CreateDependencyWalkerOptions) {
   }
 
   function walkDeps(pkgDir: string, pkgName: string): void {
+    // Resolve from the realpath: a pnpm symlink path can't resolve store-only
+    // transitive deps, and walkVisited dedups on realpath so no later retry.
     const pkgKey = opts.getFsIdentity(pkgDir)
     if (walkVisited.has(pkgKey)) return
     walkVisited.add(pkgKey)
@@ -70,7 +72,7 @@ export function createDependencyWalker(opts: CreateDependencyWalkerOptions) {
       return
     }
 
-    walkDepsOf(pkgJson, pkgDir)
+    walkDepsOf(pkgJson, pkgKey)
   }
 
   function walkKnownPackages(): void {
