@@ -39,6 +39,7 @@ export interface IntentSkillList {
   skills: Array<IntentSkillSummary>
   packages: Array<IntentPackageSummary>
   warnings: Array<string>
+  notices: Array<string>
   conflicts: Array<VersionConflict>
   debug?: IntentSkillListDebug
 }
@@ -66,6 +67,7 @@ export interface IntentSkillListDebug {
   packageCount: number
   skillCount: number
   warningCount: number
+  noticeCount: number
   conflictCount: number
   scan: IntentScanDebugStats
 }
@@ -91,6 +93,8 @@ export type IntentCoreErrorCode =
   | 'invalid-skill-use'
   | 'package-not-found'
   | 'package-excluded'
+  | 'package-not-listed'
+  | 'skill-excluded'
   | 'skill-not-found'
   | 'skill-path-outside-package'
   | 'skill-file-not-found'

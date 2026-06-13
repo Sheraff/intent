@@ -6,7 +6,7 @@ import { resolveProjectContext } from './core/project-context.js'
 import type { IntentCoreOptions } from './core.js'
 import type { ScanOptions, ScanResult, StalenessReport } from './types.js'
 
-export { printWarnings } from './cli-output.js'
+export { printNotices, printWarnings } from './cli-output.js'
 
 export interface GlobalScanFlags {
   debug?: boolean
@@ -48,20 +48,23 @@ export function getCheckSkillsWorkflowAdvisories(root: string): Array<string> {
 }
 
 export async function scanIntentsOrFail(
-  options?: ScanOptions,
+  coreOptions: IntentCoreOptions = {},
 ): Promise<ScanResult> {
-  const { scanForIntents } = await import('./scanner.js')
+  const { scanForPolicedIntents } = await import('./core/source-policy.js')
 
   try {
-    return scanForIntents(undefined, options)
+    const { scan } = scanForPolicedIntents({
+      cwd: process.cwd(),
+      scanOptions: scanOptionsFromGlobalFlags(coreOptions),
+      coreOptions,
+    })
+    return scan
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err))
   }
 }
 
-export function scanOptionsFromGlobalFlags(
-  options: GlobalScanFlags,
-): ScanOptions {
+function scanOptionsFromGlobalFlags(options: GlobalScanFlags): ScanOptions {
   if (options.global && options.globalOnly) {
     fail('Use either --global or --global-only, not both.')
   }

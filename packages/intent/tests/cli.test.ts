@@ -12,9 +12,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { INSTALL_PROMPT } from '../src/commands/install.js'
-import { runLoadCommand } from '../src/commands/load.js'
 import { isMainModule, main } from '../src/cli.js'
-import type { ScanOptions, ScanResult } from '../src/types.js'
 
 const thisDir = dirname(fileURLToPath(import.meta.url))
 const metaDir = join(thisDir, '..', 'meta')
@@ -368,6 +366,41 @@ describe('cli commands', () => {
     expect(readFileSync(agentsPath, 'utf8')).toBe(content)
   })
 
+  it('omits unlisted packages from the install --map block', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-install-allowlist-'))
+    const isolatedGlobalRoot = mkdtempSync(
+      join(realTmpdir, 'intent-cli-install-allowlist-global-'),
+    )
+    tempDirs.push(root, isolatedGlobalRoot)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      intent: { skills: ['@tanstack/query'] },
+    })
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/unlisted',
+      version: '1.0.0',
+      skillName: 'panel',
+      description: 'Unlisted panel skill',
+    })
+
+    process.env.INTENT_GLOBAL_NODE_MODULES = isolatedGlobalRoot
+    process.chdir(root)
+
+    const exitCode = await main(['install', '--map'])
+    const content = readFileSync(join(root, 'AGENTS.md'), 'utf8')
+
+    expect(exitCode).toBe(0)
+    expect(content).toContain('use: "@tanstack/query#fetching"')
+    expect(content).not.toContain('@tanstack/unlisted')
+  })
+
   it('ignores configured global packages during install --map by default', async () => {
     const root = mkdtempSync(join(realTmpdir, 'intent-cli-install-local-only-'))
     const globalRoot = mkdtempSync(
@@ -549,6 +582,11 @@ describe('cli commands', () => {
     tempDirs.push(root, isolatedGlobalRoot)
     const pkgDir = join(root, 'node_modules', '@tanstack', 'db')
 
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      intent: { skills: ['@tanstack/db'] },
+    })
     writeJson(join(pkgDir, 'package.json'), {
       name: '@tanstack/db',
       version: '0.5.2',
@@ -664,6 +702,7 @@ describe('cli commands', () => {
     writeJson(join(root, 'package.json'), {
       name: 'app',
       private: true,
+      intent: { skills: ['@tanstack/query'] },
       dependencies: {
         wrapper: '1.0.0',
       },
@@ -693,6 +732,33 @@ describe('cli commands', () => {
     expect(output).toContain('@tanstack/query')
     expect(output).not.toContain('Warnings:')
     expect(output).not.toContain('Could not read')
+  })
+
+  it('prints the intent.skills migration notice to stderr, not stdout', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-migration-'))
+    const isolatedGlobalRoot = mkdtempSync(
+      join(realTmpdir, 'intent-cli-list-migration-empty-global-'),
+    )
+    tempDirs.push(root, isolatedGlobalRoot)
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+
+    process.env.INTENT_GLOBAL_NODE_MODULES = isolatedGlobalRoot
+    process.chdir(root)
+
+    const exitCode = await main(['list'])
+    const stdout = logSpy.mock.calls.flat().join('\n')
+    const stderr = errorSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('@tanstack/query')
+    expect(stderr).toContain('intent.skills is not set')
+    expect(stdout).not.toContain('intent.skills is not set')
+    expect(stdout).not.toContain('Notices:')
   })
 
   it('prints list debug details to stderr without changing json stdout', async () => {
@@ -1349,21 +1415,6 @@ describe('cli commands', () => {
     expect(errorSpy).toHaveBeenCalledWith(
       'Invalid skill use "@tanstack/query": expected <package>#<skill>.',
     )
-  })
-
-  it('validates load use strings before scanning', async () => {
-    const scanSpy = vi.fn(
-      async (_options?: ScanOptions): Promise<ScanResult> => {
-        throw new Error('should not scan')
-      },
-    )
-
-    await expect(
-      runLoadCommand('@tanstack/query', {}, scanSpy),
-    ).rejects.toThrow(
-      'Invalid skill use "@tanstack/query": expected <package>#<skill>.',
-    )
-    expect(scanSpy).not.toHaveBeenCalled()
   })
 
   it('fails cleanly when load cannot find the package', async () => {

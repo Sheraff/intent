@@ -1,6 +1,7 @@
 import {
   coreOptionsFromGlobalFlags,
   printDebugInfo,
+  printNotices,
   printWarnings,
 } from '../cli-support.js'
 import { formatIntentCommand } from '../command-runner.js'
@@ -11,7 +12,7 @@ import type {
   IntentSkillList,
   IntentSkillSummary,
 } from '../core.js'
-import type { ScanOptions, ScanResult } from '../types.js'
+import type { ScanResult } from '../types.js'
 
 export interface ListCommandOptions extends GlobalScanFlags {
   json?: boolean
@@ -27,6 +28,7 @@ function printListDebug(result: IntentSkillList): void {
     ['packages', result.debug.packageCount],
     ['skills', result.debug.skillCount],
     ['warnings', result.debug.warningCount],
+    ['notices', result.debug.noticeCount],
     ['conflicts', result.debug.conflictCount],
     ['packageJsonReadCount', result.debug.scan.packageJsonReadCount],
     ['packageJsonCacheHits', result.debug.scan.packageJsonCacheHits],
@@ -86,7 +88,6 @@ function formatLoadCommand(
 
 export async function runListCommand(
   options: ListCommandOptions,
-  _scanIntentsOrFail?: (options?: ScanOptions) => Promise<ScanResult>,
 ): Promise<void> {
   const result = listIntentSkills(coreOptionsFromGlobalFlags(options))
   printListDebug(result)
@@ -110,6 +111,7 @@ export async function runListCommand(
       console.log()
       printWarnings(result.warnings)
     }
+    printNotices(result.notices)
     return
   }
 
@@ -168,4 +170,5 @@ export async function runListCommand(
   console.log()
 
   printWarnings(result.warnings)
+  printNotices(result.notices)
 }

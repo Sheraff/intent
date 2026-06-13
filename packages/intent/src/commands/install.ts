@@ -1,7 +1,11 @@
 import { relative } from 'node:path'
 import { fail } from '../cli-error.js'
 import { detectIntentCommandPackageManager } from '../command-runner.js'
-import { printWarnings, scanOptionsFromGlobalFlags } from '../cli-support.js'
+import {
+  coreOptionsFromGlobalFlags,
+  printNotices,
+  printWarnings,
+} from '../cli-support.js'
 import {
   buildIntentSkillGuidanceBlock,
   buildIntentSkillsBlock,
@@ -10,7 +14,8 @@ import {
   writeIntentSkillsBlock,
 } from './install-writer.js'
 import type { GlobalScanFlags } from '../cli-support.js'
-import type { ScanOptions, ScanResult } from '../types.js'
+import type { IntentCoreOptions } from '../core.js'
+import type { ScanResult } from '../types.js'
 
 export const INSTALL_PROMPT = `You are an AI assistant helping a developer set up skill-to-task mappings for their project.
 
@@ -128,9 +133,13 @@ function formatMappingCount(mappingCount: number): string {
   return `${mappingCount} ${mappingCount === 1 ? 'mapping' : 'mappings'}`
 }
 
-function printNoActionableSkills(warnings: Array<string>): void {
+function printNoActionableSkills(
+  warnings: Array<string>,
+  notices: Array<string>,
+): void {
   console.log('No intent-enabled skills found.')
   printWarnings(warnings)
+  printNotices(notices)
 }
 
 function printPlacementTip(targetPath: string): void {
@@ -184,14 +193,14 @@ function printWriteResult({
 
 export async function runInstallCommand(
   options: InstallCommandOptions,
-  scanIntentsOrFail: (options?: ScanOptions) => Promise<ScanResult>,
+  scanIntentsOrFail: (coreOptions?: IntentCoreOptions) => Promise<ScanResult>,
 ): Promise<void> {
   if (options.printPrompt) {
     console.log(INSTALL_PROMPT)
     return
   }
 
-  const scanOptions = scanOptionsFromGlobalFlags(options)
+  const coreOptions = coreOptionsFromGlobalFlags(options)
 
   if (!options.map) {
     const generated = buildIntentSkillGuidanceBlock(
@@ -237,7 +246,7 @@ export async function runInstallCommand(
     return
   }
 
-  const scanResult = await scanIntentsOrFail(scanOptions)
+  const scanResult = await scanIntentsOrFail(coreOptions)
   const generated = buildIntentSkillsBlock(scanResult)
 
   if (options.dryRun) {
@@ -247,7 +256,7 @@ export async function runInstallCommand(
     )
 
     if (!targetPath) {
-      printNoActionableSkills(scanResult.warnings)
+      printNoActionableSkills(scanResult.warnings, scanResult.notices)
       return
     }
 
@@ -256,6 +265,7 @@ export async function runInstallCommand(
     )
     console.log(generated.block)
     printWarnings(scanResult.warnings)
+    printNotices(scanResult.notices)
     return
   }
 
@@ -265,7 +275,7 @@ export async function runInstallCommand(
   })
 
   if (!result.targetPath) {
-    printNoActionableSkills(scanResult.warnings)
+    printNoActionableSkills(scanResult.warnings, scanResult.notices)
     return
   }
 
@@ -289,4 +299,5 @@ export async function runInstallCommand(
   printPlacementTip(result.targetPath)
 
   printWarnings(scanResult.warnings)
+  printNotices(scanResult.notices)
 }
