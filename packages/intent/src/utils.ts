@@ -1,8 +1,11 @@
 import { execFileSync } from 'node:child_process'
 import {
+  closeSync,
   existsSync,
   lstatSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
 } from 'node:fs'
@@ -12,13 +15,49 @@ import { parse as parseYaml } from 'yaml'
 import type { Dirent } from 'node:fs'
 
 /**
+ * The subset of `node:fs` the scanner reads through. Under Yarn PnP this is
+ * swapped for Yarn's libzip-patched `fs` so reads can reach files inside
+ * `.yarn/cache/*.zip` (see scanner `loadPnpApi`). The static `node:fs` named
+ * imports cannot be used directly for that, because their bindings are captured
+ * before Yarn's `setup()` patches the CommonJS `fs` module.
+ */
+export interface ReadFs {
+  existsSync: typeof existsSync
+  lstatSync: typeof lstatSync
+  readFileSync: typeof readFileSync
+  readdirSync: typeof readdirSync
+  realpathSync: typeof realpathSync
+  /**
+   * Optional low-level read primitives. When present (always on `node:fs` and
+   * Yarn's libzip-patched module) `parseFrontmatter` reads only the leading
+   * region of a file instead of its whole body.
+   */
+  openSync?: typeof openSync
+  readSync?: typeof readSync
+  closeSync?: typeof closeSync
+}
+
+export const nodeReadFs: ReadFs = {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  openSync,
+  readSync,
+  closeSync,
+}
+
+/**
  * Convert a path to use forward slashes (for cross-platform consistency).
  */
 export function toPosixPath(p: string): string {
   return p.split(sep).join('/')
 }
 
-export function createFsIdentityCache(): (path: string) => string {
+export function createFsIdentityCache(
+  getFs: () => ReadFs = () => nodeReadFs,
+): (path: string) => string {
   const cache = new Map<string, string>()
 
   return (path: string): string => {
@@ -26,10 +65,11 @@ export function createFsIdentityCache(): (path: string) => string {
     const cached = cache.get(resolved)
     if (cached) return cached
 
+    const fs = getFs()
     let identity: string
     try {
-      identity = lstatSync(resolved).isSymbolicLink()
-        ? realpathSync(resolved)
+      identity = fs.lstatSync(resolved).isSymbolicLink()
+        ? fs.realpathSync(resolved)
         : resolved
     } catch {
       identity = resolved
@@ -43,26 +83,35 @@ export function createFsIdentityCache(): (path: string) => string {
 /**
  * Recursively find all SKILL.md files under a directory.
  */
-export function findSkillFiles(dir: string): Array<string> {
+export function findSkillFiles(
+  dir: string,
+  fs: ReadFs = nodeReadFs,
+): Array<string> {
   const files: Array<string> = []
-  if (!existsSync(dir)) return files
+  collectSkillFiles(dir, fs, files)
+  return files
+}
 
+function collectSkillFiles(
+  dir: string,
+  fs: ReadFs,
+  files: Array<string>,
+): void {
   let entries: Array<Dirent<string>>
   try {
-    entries = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' })
+    entries = fs.readdirSync(dir, { withFileTypes: true, encoding: 'utf8' })
   } catch {
-    return files
+    return
   }
 
   for (const entry of entries) {
     const fullPath = join(dir, entry.name)
     if (entry.isDirectory()) {
-      files.push(...findSkillFiles(fullPath))
+      collectSkillFiles(fullPath, fs, files)
     } else if (entry.name === 'SKILL.md') {
       files.push(fullPath)
     }
   }
-  return files
 }
 
 /**
@@ -91,8 +140,6 @@ export function getDeps(
 export function listNodeModulesPackageDirs(
   nodeModulesDir: string,
 ): Array<string> {
-  if (!existsSync(nodeModulesDir)) return []
-
   let topEntries: Array<Dirent<string>>
   try {
     topEntries = readdirSync(nodeModulesDir, {
@@ -240,13 +287,33 @@ export function detectGlobalNodeModules(packageManager: string): {
  * (handles pnpm symlinks), then falls back to walking up node_modules
  * directories (handles packages with export maps that block ./package.json).
  */
+/**
+ * `createRequire` builds a full module-resolution context; constructing it is
+ * non-trivial and `resolveDepDir` is called once per dependency, often many
+ * times from the same `parentDir` (every sibling dep of one package). Cache the
+ * require function by its base `package.json` path. `req.resolve` still hits the
+ * live filesystem on each call, so cached entries never go stale.
+ */
+const requireForBaseCache = new Map<string, ReturnType<typeof createRequire>>()
+
+function getRequireForBase(
+  basePackageJson: string,
+): ReturnType<typeof createRequire> {
+  let req = requireForBaseCache.get(basePackageJson)
+  if (!req) {
+    req = createRequire(basePackageJson)
+    requireForBaseCache.set(basePackageJson, req)
+  }
+  return req
+}
+
 export function resolveDepDir(
   depName: string,
   parentDir: string,
 ): string | null {
   // Try createRequire — works for most packages including pnpm virtual store
   try {
-    const req = createRequire(join(parentDir, 'package.json'))
+    const req = getRequireForBase(join(parentDir, 'package.json'))
     const pkgJsonPath = req.resolve(join(depName, 'package.json'))
     return dirname(pkgJsonPath)
   } catch (err: unknown) {
@@ -284,17 +351,61 @@ export function resolveDepDir(
  */
 export function parseFrontmatter(
   filePath: string,
+  fs: ReadFs = nodeReadFs,
 ): Record<string, unknown> | null {
-  let content: string
-  try {
-    content = readFileSync(filePath, 'utf8')
-  } catch {
-    return null
-  }
+  const content = readFrontmatterRegion(filePath, fs)
+  if (content === null) return null
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
   if (!match?.[1]) return null
   try {
     return parseYaml(match[1]) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/** Max bytes read when probing a file's leading frontmatter region. */
+const FRONTMATTER_READ_LIMIT = 16 * 1024
+/** Reused across calls; safe because reads are synchronous and single-threaded. */
+const frontmatterBuffer = Buffer.allocUnsafe(FRONTMATTER_READ_LIMIT)
+
+/**
+ * Read just the leading region of a file, enough to cover its frontmatter,
+ * instead of its whole body. Falls back to a full read when the bounded read
+ * primitives are unavailable or the frontmatter exceeds the probe limit.
+ */
+function readFrontmatterRegion(filePath: string, fs: ReadFs): string | null {
+  if (fs.openSync && fs.readSync && fs.closeSync) {
+    let region: string | null = null
+    let truncated = false
+    let fd: number
+    try {
+      fd = fs.openSync(filePath, 'r')
+    } catch {
+      return null
+    }
+    try {
+      const bytesRead = fs.readSync(
+        fd,
+        frontmatterBuffer,
+        0,
+        FRONTMATTER_READ_LIMIT,
+        0,
+      )
+      region = frontmatterBuffer.toString('utf8', 0, bytesRead)
+      // A full buffer means the file may extend past the probe window; only
+      // trust the bounded read when it captured the closing fence.
+      truncated =
+        bytesRead === FRONTMATTER_READ_LIMIT &&
+        !/\r?\n---/.test(region.slice(3))
+    } finally {
+      fs.closeSync(fd)
+    }
+    if (!truncated) return region
+  }
+
+  try {
+    return fs.readFileSync(filePath, 'utf8')
   } catch {
     return null
   }
