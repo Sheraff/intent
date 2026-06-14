@@ -72,6 +72,7 @@ let errorSpy: ReturnType<typeof vi.spyOn>
 let stdoutWriteSpy: ReturnType<typeof vi.spyOn>
 let tempDirs: Array<string>
 let previousGlobalNodeModules: string | undefined
+let previousNoNotices: string | undefined
 
 function getHelpOutput(): string {
   return [...infoSpy.mock.calls, ...logSpy.mock.calls]
@@ -83,7 +84,9 @@ beforeEach(() => {
   originalCwd = process.cwd()
   tempDirs = []
   previousGlobalNodeModules = process.env.INTENT_GLOBAL_NODE_MODULES
+  previousNoNotices = process.env.INTENT_NO_NOTICES
   delete process.env.INTENT_GLOBAL_NODE_MODULES
+  delete process.env.INTENT_NO_NOTICES
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
   infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -98,6 +101,11 @@ afterEach(() => {
     delete process.env.INTENT_GLOBAL_NODE_MODULES
   } else {
     process.env.INTENT_GLOBAL_NODE_MODULES = previousGlobalNodeModules
+  }
+  if (previousNoNotices === undefined) {
+    delete process.env.INTENT_NO_NOTICES
+  } else {
+    process.env.INTENT_NO_NOTICES = previousNoNotices
   }
   logSpy.mockRestore()
   infoSpy.mockRestore()
@@ -210,6 +218,117 @@ describe('cli commands', () => {
 
     expect(exitCode).toBe(0)
     expect(logSpy).toHaveBeenCalledWith(INSTALL_PROMPT)
+  })
+
+  it('lists excludes when none are configured', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-exclude-list-empty-'))
+    tempDirs.push(root)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+    })
+    process.chdir(root)
+
+    const exitCode = await main(['exclude'])
+
+    expect(exitCode).toBe(0)
+    expect(logSpy).toHaveBeenCalledWith('No excludes configured.')
+  })
+
+  it('adds and lists an exclude pattern', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-exclude-add-'))
+    tempDirs.push(root)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+    })
+    process.chdir(root)
+
+    const addExitCode = await main([
+      'exclude',
+      'add',
+      '@tanstack/router#experimental-*',
+    ])
+    const listExitCode = await main(['exclude'])
+    const pkg = JSON.parse(
+      readFileSync(join(root, 'package.json'), 'utf8'),
+    ) as {
+      intent?: { exclude?: Array<string> }
+    }
+    const output = logSpy.mock.calls.flat().join('\n')
+
+    expect(addExitCode).toBe(0)
+    expect(listExitCode).toBe(0)
+    expect(pkg.intent?.exclude).toEqual(['@tanstack/router#experimental-*'])
+    expect(output).toContain('Configured excludes:')
+    expect(output).toContain('- @tanstack/router#experimental-*')
+  })
+
+  it('removes an exclude pattern', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-exclude-remove-'))
+    tempDirs.push(root)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      intent: {
+        exclude: ['@tanstack/router#experimental-*'],
+      },
+    })
+    process.chdir(root)
+
+    const exitCode = await main([
+      'exclude',
+      'remove',
+      '@tanstack/router#experimental-*',
+    ])
+    const pkg = JSON.parse(
+      readFileSync(join(root, 'package.json'), 'utf8'),
+    ) as {
+      intent?: { exclude?: Array<string> }
+    }
+
+    expect(exitCode).toBe(0)
+    expect(pkg.intent?.exclude).toEqual([])
+    expect(logSpy).toHaveBeenCalledWith(
+      'Removed exclude pattern "@tanstack/router#experimental-*" from package.json intent.exclude.',
+    )
+  })
+
+  it('prints excludes as JSON', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-exclude-list-json-'))
+    tempDirs.push(root)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      intent: {
+        exclude: ['@tanstack/router#experimental-*', '*#draft-*'],
+      },
+    })
+    process.chdir(root)
+
+    const exitCode = await main(['exclude', 'list', '--json'])
+    const output = logSpy.mock.calls.at(-1)?.[0]
+    const parsed = JSON.parse(String(output)) as Array<string>
+
+    expect(exitCode).toBe(0)
+    expect(parsed).toEqual(['@tanstack/router#experimental-*', '*#draft-*'])
+  })
+
+  it('fails cleanly on unknown exclude actions', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-exclude-bad-action-'))
+    tempDirs.push(root)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+    })
+    process.chdir(root)
+
+    const exitCode = await main(['exclude', 'enable', '@tanstack/router'])
+
+    expect(exitCode).toBe(1)
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Unknown exclude action: enable. Expected list, add, or remove.',
+    )
   })
 
   it('writes skill loading guidance by default and is idempotent', async () => {
@@ -761,6 +880,61 @@ describe('cli commands', () => {
     expect(stdout).not.toContain('Notices:')
   })
 
+  it('suppresses notices when --no-notices is passed', async () => {
+    const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-no-notices-'))
+    const isolatedGlobalRoot = mkdtempSync(
+      join(realTmpdir, 'intent-cli-list-no-notices-empty-global-'),
+    )
+    tempDirs.push(root, isolatedGlobalRoot)
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+
+    process.env.INTENT_GLOBAL_NODE_MODULES = isolatedGlobalRoot
+    process.chdir(root)
+
+    const exitCode = await main(['list', '--no-notices'])
+    const stdout = logSpy.mock.calls.flat().join('\n')
+    const stderr = errorSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('@tanstack/query')
+    expect(stderr).not.toContain('intent.skills is not set')
+    expect(stderr).not.toContain('Notices:')
+  })
+
+  it('suppresses notices when INTENT_NO_NOTICES=1 is set', async () => {
+    const root = mkdtempSync(
+      join(realTmpdir, 'intent-cli-list-env-no-notices-'),
+    )
+    const isolatedGlobalRoot = mkdtempSync(
+      join(realTmpdir, 'intent-cli-list-env-no-notices-empty-global-'),
+    )
+    tempDirs.push(root, isolatedGlobalRoot)
+    writeInstalledIntentPackage(root, {
+      name: '@tanstack/query',
+      version: '5.0.0',
+      skillName: 'fetching',
+      description: 'Query data fetching patterns',
+    })
+
+    process.env.INTENT_GLOBAL_NODE_MODULES = isolatedGlobalRoot
+    process.env.INTENT_NO_NOTICES = '1'
+    process.chdir(root)
+
+    const exitCode = await main(['list'])
+    const stdout = logSpy.mock.calls.flat().join('\n')
+    const stderr = errorSpy.mock.calls.flat().join('\n')
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('@tanstack/query')
+    expect(stderr).not.toContain('intent.skills is not set')
+    expect(stderr).not.toContain('Notices:')
+  })
+
   it('prints list debug details to stderr without changing json stdout', async () => {
     const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-debug-'))
     tempDirs.push(root)
@@ -1012,9 +1186,14 @@ describe('cli commands', () => {
     })
   })
 
-  it('excludes packages from list output with --exclude', async () => {
+  it('excludes packages from list output with package.json intent.exclude', async () => {
     const root = mkdtempSync(join(realTmpdir, 'intent-cli-list-exclude-'))
     tempDirs.push(root)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      intent: { exclude: ['@tanstack/*devtools*'] },
+    })
     writeInstalledIntentPackage(root, {
       name: '@tanstack/query',
       version: '5.0.0',
@@ -1030,12 +1209,7 @@ describe('cli commands', () => {
 
     process.chdir(root)
 
-    const exitCode = await main([
-      'list',
-      '--json',
-      '--exclude',
-      '@tanstack/*devtools*',
-    ])
+    const exitCode = await main(['list', '--json'])
     const output = logSpy.mock.calls.at(-1)?.[0]
     const parsed = JSON.parse(String(output)) as {
       packages: Array<{ name: string }>
@@ -1451,9 +1625,14 @@ describe('cli commands', () => {
     )
   })
 
-  it('fails clearly when loading an excluded package', async () => {
+  it('fails clearly when loading a package excluded by package.json', async () => {
     const root = mkdtempSync(join(realTmpdir, 'intent-cli-load-exclude-'))
     tempDirs.push(root)
+    writeJson(join(root, 'package.json'), {
+      name: 'app',
+      private: true,
+      intent: { exclude: ['@tanstack/*devtools*'] },
+    })
     writeInstalledIntentPackage(root, {
       name: '@tanstack/devtools',
       version: '1.0.0',
@@ -1462,12 +1641,7 @@ describe('cli commands', () => {
     })
     process.chdir(root)
 
-    const exitCode = await main([
-      'load',
-      '@tanstack/devtools#panel',
-      '--exclude',
-      '@tanstack/*devtools*',
-    ])
+    const exitCode = await main(['load', '@tanstack/devtools#panel'])
 
     expect(exitCode).toBe(1)
     expect(errorSpy).toHaveBeenCalledWith(

@@ -10,9 +10,10 @@ export { printNotices, printWarnings } from './cli-output.js'
 
 export interface GlobalScanFlags {
   debug?: boolean
-  exclude?: string | Array<string>
   global?: boolean
   globalOnly?: boolean
+  notices?: boolean
+  noNotices?: boolean
 }
 
 export interface StaleTargetResult {
@@ -89,14 +90,15 @@ export function coreOptionsFromGlobalFlags(
 
   return {
     debug: options.debug,
-    exclude: Array.isArray(options.exclude)
-      ? options.exclude
-      : options.exclude
-        ? [options.exclude]
-        : undefined,
     global: options.global,
     globalOnly: options.globalOnly,
   }
+}
+
+export function noticeOptionsFromGlobalFlags(options: GlobalScanFlags): {
+  noNotices?: boolean
+} {
+  return { noNotices: options.noNotices || options.notices === false }
 }
 
 function formatDebugValue(value: string | number | Array<string>): string {

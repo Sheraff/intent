@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { cac } from 'cac'
 import { fail, isCliFailure } from './cli-error.js'
 import type { CAC } from 'cac'
+import type { ExcludeCommandOptions } from './commands/exclude.js'
 import type { InstallCommandOptions } from './commands/install.js'
 import type { ListCommandOptions } from './commands/list.js'
 import type { LoadCommandOptions } from './commands/load.js'
@@ -20,14 +21,12 @@ function createCli(): CAC {
       'list',
       'Discover intent-enabled packages from the project or workspace',
     )
-    .usage(
-      'list [--json] [--debug] [--exclude <pattern>] [--global] [--global-only]',
-    )
+    .usage('list [--json] [--debug] [--global] [--global-only] [--no-notices]')
     .option('--json', 'Output JSON')
     .option('--debug', 'Print discovery debug details to stderr')
-    .option('--exclude <pattern>', 'Exclude package name glob')
     .option('--global', 'Include global packages after project packages')
     .option('--global-only', 'List global packages only')
+    .option('--no-notices', 'Suppress non-critical notices on stderr')
     .example('list')
     .example('list --json')
     .example('list --global')
@@ -37,14 +36,33 @@ function createCli(): CAC {
     })
 
   cli
-    .command('load [use]', 'Load a compact skill use and print its SKILL.md')
-    .usage(
-      'load <use> [--path] [--json] [--debug] [--exclude <pattern>] [--global] [--global-only]',
+    .command(
+      'exclude [action] [pattern]',
+      'Manage package.json intent.exclude entries',
     )
+    .usage('exclude [list|add|remove] [pattern] [--json]')
+    .option('--json', 'Output JSON list of configured exclude patterns')
+    .example('exclude')
+    .example('exclude list --json')
+    .example('exclude add @tanstack/router#experimental-*')
+    .example('exclude remove @tanstack/router#experimental-*')
+    .action(
+      async (
+        action: string | undefined,
+        pattern: string | undefined,
+        options: ExcludeCommandOptions,
+      ) => {
+        const { runExcludeCommand } = await import('./commands/exclude.js')
+        await runExcludeCommand(action, pattern, options)
+      },
+    )
+
+  cli
+    .command('load [use]', 'Load a compact skill use and print its SKILL.md')
+    .usage('load <use> [--path] [--json] [--debug] [--global] [--global-only]')
     .option('--path', 'Print the resolved skill path instead of file content')
     .option('--json', 'Output JSON')
     .option('--debug', 'Print resolution debug details to stderr')
-    .option('--exclude <pattern>', 'Exclude package name glob')
     .option('--global', 'Load from project packages, then global packages')
     .option('--global-only', 'Load from global packages only')
     .example('load @tanstack/query#core')
@@ -86,7 +104,7 @@ function createCli(): CAC {
       'Create or update skill loading guidance in an agent config file',
     )
     .usage(
-      'install [--map] [--dry-run] [--print-prompt] [--global] [--global-only]',
+      'install [--map] [--dry-run] [--print-prompt] [--global] [--global-only] [--no-notices]',
     )
     .option('--map', 'Write explicit skill-to-task mappings')
     .option('--dry-run', 'Print the generated block without writing')
@@ -96,6 +114,7 @@ function createCli(): CAC {
     )
     .option('--global', 'Include global packages after project packages')
     .option('--global-only', 'Install mappings from global packages only')
+    .option('--no-notices', 'Suppress non-critical notices on stderr')
     .example('install')
     .example('install --map')
     .example('install --dry-run')
